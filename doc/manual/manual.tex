@@ -1,0 +1,273 @@
+%\documentclass[11pt]{article}
+\documentclass[11pt]{report}
+
+\usepackage{amsmath, amstext, amssymb}
+\usepackage{widetable}
+\usepackage{booktabs}
+\usepackage{newcent}
+\usepackage{pstricks}
+\usepackage{fancyhdr}
+\usepackage[dvips]{graphicx}
+\usepackage{makeidx}
+\usepackage{psfrag}
+\usepackage{alltt}
+\usepackage{index}
+\usepackage{fancyvrb}
+\usepackage{pst-blur}
+\usepackage{pst-grad}
+\usepackage{epsfig}
+%\usepackage{subfig}
+\usepackage{subfigure}
+\usepackage{xspace}
+\usepackage{array}
+
+\usepackage[colorlinks=true,linktocpage=true]{hyperref}
+
+%% Listings package START
+\usepackage{color}
+\usepackage{listings}
+
+\definecolor{darkblue}{rgb}{0,0,.6}
+\definecolor{darkred}{rgb}{.6,0,0}
+\definecolor{darkgreen}{rgb}{0,.6,0}
+\definecolor{red}{rgb}{.98,0,0}
+\definecolor{lightgrey}{rgb}{0.98,0.98,0.98}
+\definecolor{black}{rgb}{0,0,0}
+
+%\lstloadlanguages{C++}
+%\lstset{
+%  language=C++,
+%  basicstyle=\small\ttfamily,
+%  commentstyle=\itshape\color{darkgreen},
+%  keywordstyle=\bfseries\color{darkblue},
+%  stringstyle=\color{darkred},
+%  showspaces=false,
+%  showtabs=false,
+%  columns=fixed,
+%  backgroundcolor=\color{lightgrey},
+%  numbers=none,
+%  frame=single,
+%  numberstyle=\tiny,
+%  breaklines=true,
+%  showstringspaces=false,
+%  xleftmargin=0.1cm
+%}
+\lstset{
+   language=C++,
+   frame=lines,
+   basicstyle=\small\ttfamily,
+   keywordstyle=\bfseries\color{darkblue},
+   stringstyle=\color{black}\ttfamily,
+   tabsize=2,
+   %emphstyle=\color{blue}\texttt
+   commentstyle=\color{darkgreen}\ttfamily,
+   numbers=left,
+   numberstyle=\tiny,
+   showstringspaces=false,
+   literate={~} {$\sim$}{1}
+}
+
+\lstdefinelanguage{XML}
+{
+  morestring=[b]",
+  morestring=[s]{>}{<},
+  morecomment=[s]{<?}{?>},
+  stringstyle=\color{black},
+  identifierstyle=\color{darkblue},
+  keywordstyle=\color{cyan},
+  morekeywords={xmlns,version,type}% list your attributes here
+}
+
+
+\newcommand{\cmake}           {CMake\xspace}
+\newcommand{\viennax}         {ViennaX\xspace}
+\newcommand{\viennafactory}   {ViennaFactory\xspace}
+\newcommand{\viennautils}     {ViennaUtils\xspace}
+\newcommand{\gcc}             {GNU GCC\xspace}
+\newcommand{\boost}           {Boost\xspace}
+\newcommand{\plugin}          {plugin\xspace}
+\newcommand{\openmpi}         {Open MPI\xspace}
+\newcommand{\mpich}           {MPICH2\xspace}
+\newcommand{\lammpi}          {LAM/MPI\xspace}
+
+\renewcommand{\arraystretch}{1.2}
+
+
+%\include{keywords}
+\include{setup}
+
+\begin{document}
+\pagenumbering{roman}
+
+% ==============================================================================
+% TITLEPAGE
+% ==============================================================================
+\begin{titlepage}
+
+\vspace*{3cm}
+\Huge{ViennaWD}
+\rule[0.0cm]{12.3cm}{0.05cm}
+\begin{flushright}
+\Large{User Manual\\}
+\Large{v3.0.0}
+%\Large{Building Instructions}\\
+%\Large{Input Specifications}
+\end{flushright}
+
+\vspace{12cm}
+\rule[0.0cm]{16.0cm}{0.05cm}
+\begin{figure}[!ht]
+   \vspace{-1.0cm}
+   \centering
+   \begin{minipage}{3cm}
+      \epsfig{file=figures/TU_Signet_CMYK, scale=0.25}
+   \end{minipage}
+   \hfill
+   \hspace{-0.5cm}
+   \begin{minipage}{5.5cm}
+      \vspace{0.5cm}
+      \begin{center}
+      Institute for Microelectronics\newline
+      Technische Universit\"at Wien\newline
+      Gu\ss hausstra\ss e 27-29 / E360\newline
+      A-1040 Vienna, Austria\newline
+      \end{center}
+   \end{minipage}
+   \hfill
+   \begin{minipage}{2.6cm}
+      \epsfig{file=figures/logo_px200, scale=1.6}
+   \end{minipage}
+\end{figure}
+
+\end{titlepage}
+% ==============================================================================
+\clearpage
+% ==============================================================================
+% CONTRIBUTERS
+% ==============================================================================
+\begin{tabular}{ll}
+Copyright {\copyright} 2012-2015 & Institute for Microelectronics, TU Wien.
+\end{tabular}
+
+\vspace{3.5cm}
+
+\textbf{Principal Investigator:}\\
+Mihail Nedjalkov\\
+
+\textbf{Developers:}\\
+Paul Ellinghaus\\
+Josef Weinbub\\
+Matthias Glanz\\
+
+\textbf{Advisors:}\\
+Ivan Dimov\\
+Dragica Vasileska\\
+Siegfried Selberherr\\
+
+\textbf{Former Contributers:}\\
+Marek Pobjecky\\
+Philipp Schwaha\\
+
+
+
+\vspace{7.0cm}
+
+Institute for Microelectronics, TU Wien\newline
+Gu\ss hausstra\ss e 27-29 / E360\newline
+A-1040 Vienna, Austria/Europe\newline
+
+\begin{tabular}{ll}
+Phone  & +43-1-58801-36001\\
+FAX    & +43-1-58801-36099\\
+Web    & \texttt{http://www.iue.tuwien.ac.at/}
+\end{tabular}
+
+% ==============================================================================
+%\addtocontents{toc}{\protect\setcounter{tocdepth}{1}}
+\setcounter{tocdepth}{3}
+\tableofcontents
+\addcontentsline{toc}{chapter}{Contents}
+
+\clearpage
+\pagenumbering{arabic}
+
+
+% ==============================================================================
+\chapter{Overview}   %\addcontentsline{toc}{chapter}{Overview}
+% ==============================================================================
+ViennaWD is a suite of Monte Carlo simulation tools intended for the simulation of semiconductor devices in the classical domain and the investigation of quantum phenomena using the Wigner formalism. The suite encompasses the following simulation tools:
+\begin{itemize}
+  \item Wigner Ensemble Monte Carlo (WEMC)
+  \item Classical Ensemble Monte Carlo (CEMC)
+  \item Phonon Decoherence (PD)
+\end{itemize}
+The purpose, use and installation of each tool is discussed self-consistently in the following chapters.
+
+
+
+\chapter{Building Information}
+
+ViennaWD ships a central CMake~\cite{cmake} script, allowing to configure and build all simulators via one script.
+In the following, we will discuss general installation aspects, however, for simulator-specific aspects please consult the respective
+building-related sections.
+
+\section{Build Configuration}
+
+A default build configuration, which setup all simulators, is generated by:
+
+
+\begin{lstlisting}
+$> cd ViennaWD/
+$> mkdir build
+$> cd build
+$> cmake ..
+\end{lstlisting}
+
+
+\NOTE{Watch for errors or warnings reported by CMake during the configuration process.}
+
+\TIP{CMake will automatically try to discover the required dependencies on your system.}
+
+\TIP{Use CMake's GUI application (\texttt{cmake-gui}) to conveniently select build features.}
+
+\section{Configuration Options}
+
+ViennaWD's build system allows to select the optimization level as well as the simulation tools to be generated by using the following CMake~\cite{cmake} options:
+
+\begin{itemize}
+  \item -D CMAKE\_BUILD\_TYPE=Debug$|$Release$|$RelWithDebInfo (default=Release)
+  \item -D BUILD\_WEMC=OFF (default=ON)
+  \item -D BUILD\_CEMC=ON (default=OFF)
+  \item -D BUILD\_PD=ON (default=OFF)
+\end{itemize}
+
+\section{Building}
+
+To build the simulators issue the following
+
+\begin{lstlisting}
+$> make
+\end{lstlisting}
+
+\TIP{Use \texttt{-jN}, where \texttt{N} refers to the number of parallel jobs/available CPU cores, to speed-up the build process.}
+
+
+% ==============================================================================
+% Add Project specifc external Latex source file
+% ==============================================================================
+\input{wigner_ensemble_monte_carlo}
+\input{classic_ensemble_monte_carlo}
+\input{phonon_decoherence}
+\input{visualization}
+% ==============================================================================
+
+
+\begingroup
+\raggedright
+%\bibliographystyle{IEEEtran_v1.13}
+\bibliographystyle{MyIEEEtran}
+\bibliography{literature}
+\addcontentsline{toc}{chapter}{Bibliography}
+
+
+\end{document}

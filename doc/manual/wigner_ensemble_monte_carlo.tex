@@ -1,0 +1,313 @@
+
+% ==============================================================================
+\chapter{Wigner Ensemble Monte Carlo}   %\addcontentsline{toc}{chapter}{Introduction} \label{intro}
+% ==============================================================================
+
+\section{Introduction}
+Wigner Ensemble Monte Carlo (WEMC) is a C-based simulator, with MPI parallelisation, for quantum transport simulations in one- and two-dimensional structures.
+
+The Wigner formalism expresses quantum mechanics in terms of functions and variables in the phase space. Such a formulation allows a more intuitive insight, versus wave functions and operators, and allows the utilization of some classical notions, e.g. Boltzmann scattering. The Wigner function is known as a quasi-distribution function since, despite negative values occurring, it can be used in the same way as a true distribution function to calculate physical averages of interest, e.g. density or current. The Wigner equation describes the temporal evolution of the Wigner function, $f_w$. The choice of a finite coherence length $L$ \cite{signParticle2D} yields the semi-discrete form of the Wigner equation, the one-dimensional version of which is defined as
+\begin{equation}
+\frac{\partial f_{w}}{\partial t}+\frac{\hbar q\Delta k}{m^{*}}\frac{\partial f_{w}}{\partial x}={\displaystyle \sum_{q=-K}^{K}V_{w}\left(x,q-q',t\right)f_{w}\left(x,q',t\right)},\label{eq:semi-discrete-wigner-eq}
+\end{equation}
+where $q$ is an index which represents the quantized momentum, i.e. $p=\hbar\left(q\Delta k\right)$. The resolution $\Delta k$ is determined by the coherence length, $\Delta k=\frac{\pi}{L}$. The effective mass is represented by $m^*$ in the above equation. The Wigner potential $V_w$ is defined as
+\begin{eqnarray}
+V_{w}\left(x,q\right) & \equiv & \frac{1}{i\hbar L}\int_{-\frac{L}{2}}^{\frac{L}{2}}ds\, e^{-i2q\Delta k\cdot s}\delta V\left(s;x\right);\label{eq:semi-discrete-wigner-potential}\\
+\delta V\left(s;x\right) & \equiv & V\left(x+s\right)-V\left(x-s\right).\nonumber
+\end{eqnarray}
+
+The WEMC simulator solves (\ref{eq:semi-discrete-wigner-eq}), using the signed-particle Monte Carlo method \cite{Mixi_MCmethod_APL} for the one- and two-dimensional case. The evolution of an initial condition, e.g. a minimum uncertainty wave packet (default), can be investigated in the presence of a static potential profile. The minimum uncertainty wave packet is defined as
+\begin{equation}
+\psi\left(x,t_{0}\right)=\left(2\pi\sigma^{2}\right)^{-\frac{1}{4}}e^{-\frac{\left(x-x_{0}\right)^{2}}{4\sigma^{2}}}e^{ik_{0}z},\label{eq:initial_condition}
+\end{equation}
+where $\sigma$, $x_0$ and $k_0$ represent the standard deviation (in space), the mean position and the mean momentum (i.t.o. $k$), respectively. The initial condition and the potential profile can be specified using input files (discussed in Section~\ref{ch:simulations}). 
+
+Boltzmann-type scattering mechanisms can be selectively activated. Currently, models for acoustic, Coulomb, optical (intravalley), XX/LL/XL intervalley and surface roughness are implemented for the silicon material system.
+
+The simulator offers parallel execution in a distributed-memory environment, using MPI. The parallelization approach is based on a spatial domain decomposition where each MPI process is assigned a part of the domain and treats only particles present in its subdomain. Further details can be found in \cite{JCEL_MPI}\cite{JCEL_MPI_2}.
+
+
+
+% ==============================================================================
+% ==============================================================================
+\section{Building Information} %\addcontentsline{toc}{chapter}{Building Instructions} \label{building}
+% ==============================================================================
+% ==============================================================================
+
+\subsection{Dependencies}
+
+The following list represents the required packages to build and execute the WEMC simulator.
+Note that a serial version and a parallel MPI version of the simulator can be compiled,
+requiring an appropriate MPI library.
+
+
+\begin{itemize}
+  \item C-Compiler (e.g. GCC~\cite{gcc} Version $\geq4.4$)
+  \item CMake~\cite{cmake} Version $\geq2.6$
+  \item GSL~\cite{gsl} Version $\geq1.16$
+  \item FFTW~\cite{fftw} Version $\geq3.3.3$
+  \item Lua~\cite{lua} Version $5.1$
+  \item MPI (e.g. OpenMPI~\cite{openmpi} Version $\geq1.3$) - optional -
+%  \item OpenMP~\cite{openmp} Version $\geq3.0$ - optional -
+  \item gnuplot	\cite{gnuplot} Version $\geq4.2$ - optional -
+  \item Python \cite{python} Version $\geq3.0$ - optional -
+\end{itemize}
+
+\TIP{All external dependencies are usually shipped with the popular Linux distributions.
+For instance, on Linux Mint check for the following packages to install the aforementioned packages: cmake, libgsl0-dev, libfftw3-dev, liblua5.1-0-dev, openmpi-bin}
+
+\subsection{Configuration Options}
+
+
+Several optional configuration targets are provided, such as:
+
+\begin{itemize}
+  \item -D USE\_MPI=OFF (default=ON)
+%  \item -D USE\_OPENMP=ON (default=OFF)
+  \item -D DEBUG\_OUTPUT=OFF (default=ON)
+  \item -D FILE\_OUTPUT=OFF (default=ON)
+  \item -D BUILD\_TESTS=OFF (default=ON)
+\end{itemize}
+
+To build only the serial version of the simulator the following configuration can be used, for instance:
+
+\begin{lstlisting}
+$> cmake -D USE_MPI=OFF ..
+\end{lstlisting}
+
+To build the parallel MPI version of the simulator in addition to the serial version, use the following configuration:
+
+\begin{lstlisting}
+$> cmake -D USE_MPI=ON ..
+\end{lstlisting}
+
+
+
+
+% ==============================================================================
+% ==============================================================================
+\section{Simulations} \label{ch:simulations} %\addcontentsline{toc}{chapter}{Building Instructions} \label{building}
+% ==============================================================================
+% ==============================================================================
+
+\subsection{Simulator Control}
+
+The simulations are set up via text-based configuration file, which allows the user to specify various parameters. Furthermore, there exists the option to specify a potential profile and/or an initial state and/or a working directory where output files of the simulator are saved. The details of these input files/arguments are discussed in the following.
+
+\subsubsection{Configuration}
+
+The simulation parameters that can be specified by the user are fed to the simulator using a text-based Lua~\cite{lua} input file. The parameters pertain to a specification of the simulation domain, computational aspects and physical models (amongst other things). The configuration file \texttt{examples/full\_config.lua} explains all user-specifiable parameters along with their default values. Only certain parameters must be specified; optional parameters revert to default values if not specified. %Table \ref{tab:lua-params} lists all parameters, with their meaning, default values (if applicable) and valid ranges.
+
+The simulation domain is defined by specifying the minimum and maximum values along each axis, i.e. the boundaries of a rectangle. A one-dimensional domain must be specified using the $y$ parameters;  the $x$-values must be set to zero. Two kinds of boundary conditions can be specified, namely absorbing or reflecting, for each of the four boundaries (two in 1D case).
+
+%The parameters of (\ref{eq:wave-packet}) appearing in \ref{tab:lua-params} can be specified in the lua file. The square potential barrier is defined through the position of its left edge, its width and height, as specified in \ref{tab:lua-params}. Note that due to the finite mesh-size value, the rectangular is represented as a trapezium.
+%Parameters that do not appear in the table should be left unaltered.
+
+%\clearpage
+
+%\begin{table}[ht]
+%\caption{Input parameters for Lua file\label{tab:lua-params} }
+%\begin{widetable}{\columnwidth}{ccl}
+%\toprule
+%Parameter name & Units & Remark\\
+%\midrule
+%\texttt{x0, y0} & m & mean position of wave packet\\
+%\texttt{sigmaX, sigmaY} & m & spatial standard deviation\\
+%\texttt{k0x, k0y} & 1 & mean momentum offset $(\texttt{k0}\, \hbar\Delta k)$ \\
+%\midrule
+%\texttt{barrier\_left\_edge} & m & start position of barrier\\
+%\texttt{barrier\_width} & m & width of barrier\\
+%\texttt{V1} & eV & height of potential barrier\\
+%\midrule
+%\texttt{mesh\_size} & m & spacing between mesh nodes (uniform)\\
+%\texttt{L\_coh} & m & coherence length\\
+%\midrule
+%\texttt{Lx1/2} & m & minimum/maximum of domain in x-direction\\
+%\texttt{Ly1/2} & m & minimum/maximum of domain in y-direction\\
+%\texttt{BC1/2/3/4} & - & boundary condition at Lx1/2, Ly1/2\\
+%\midrule
+%\texttt{global_max_particles} & 1 & maximum number of parti\\
+%\texttt{dt} & s & time step (where annihilation can be performed)\\
+%\texttt{total\_time} & s & total simulation time\\
+%\texttt{signed\_total} & 1 & number of particles initialized in wave packet\\
+
+%\bottomrule
+%\end{widetable}
+%\end{table}
+
+Other examples of configuration files are shipped with WEMC and are located under
+
+\begin{lstlisting}
+wigner_ensemble_monte_carlo/examples/
+\end{lstlisting}
+
+The configuration file is passed to the simulator as the first argument. For the serial simulator this can be done by
+
+\begin{lstlisting}
+$> cd ViennaWD/build/wigner_ensemble_monte_carlo/
+$> ./wemcsim ../../wigner_ensemble_monte_carlo/examples/configuration.lua
+\end{lstlisting}
+
+or, when using the MPI-enabled simulator, by
+
+\begin{lstlisting}
+$> cd ViennaWD/build/wigner_ensemble_monte_carlo/
+$> mpirun -np 4 ./wemcsim_mpi \
+   ../../wigner_ensemble_monte_carlo/examples/configuration.lua
+\end{lstlisting}
+
+\subsubsection{Potential profile}
+
+The default potential profile is a square potential barrier of which the parameters can be specified in the Lua configuration file; if no parameters are specified in the configuration file a constant (zero) potential is assumed. The potential profile is hard-coded in the file \linebreak \texttt{src/potential\_profile.c}. This file contains several parameterized analytical formulas in functions, which can be extended and combined to construct a potential profile. Otherwise, the simulator also offers the possibility to specify a potential profile using a CSV file.
+%A time-dependent potential profile can also be specified, but is currently only supported in the serial version of the simulator. 
+
+The filename of the potential profile must contain the string "potential" to be correctly identified as a potential input for the simulator, e.g. \texttt{potential\_profile\_example.csv}. Currently, the simulator only supports a uniform rectangular mesh. The user must ensure that the grid specified in the potential profile matches the dimensions and mesh size specified in the Lua input file. The profile is saved in a simple CSV format: the x-position~[m], y-position~[m] and potential~[eV] are specified, using a space as a delimiter between them; each x-value is associated with a block of y-values. The file for a one-dimensional profile should contain an x-value of zero in the first column. For an example, refer to the files \texttt{examples/potential\_*\_example*.csv}. 
+
+The execution of the simulator with the specification of a potential profile in a CSV file is done as follows:
+\begin{lstlisting}
+$> cd ViennaWD/build/wigner_ensemble_monte_carlo/
+$> ./wemcsim ../../wigner_ensemble_monte_carlo/examples/configuration.lua \
+   /dir_with_potential_files/potential_example.csv
+\end{lstlisting}
+
+
+\subsubsection{Initial condition}
+
+The default initial condition, which can be specified in the Lua configuration file, is a single minimum uncertainty wave packet, as defined in (\ref{eq:initial_condition}) (and its 2D analogue). 
+If a different initial condition is desired, the file \texttt{src/particle\_initialization.c} can be modified. Alternatively, the initial condition can be specified by an input file. The initial condition can be specified using either a Wigner function or a particle ensemble. 
+
+The Wigner function is specified in a file by defining its value for each cell in the phase space. The values of the Wigner function can be negative, however, the sum of all values should still add up to 1. The absolute value of the Wigner function in each cell is multiplied by the value of \texttt{signed\_total}, specified in the configuration file, and the resulting number of particles are generated in the cell with a sign corresponding to that of the Wigner function. The size of the phase space cells specified in the file must be compatible with the dimensions, mesh size and coherence length specified in the configuration file. The filename of the Wigner function must be named as \texttt{*wigner*.csv}, where the string "wigner" is used to correctly identify the file as an input for the initial condition in the form of a Wigner function. 
+
+The initial condition can also be specified through an input file defining the ensemble of particles with the properties of each particle. This method of specifying the initial condition is intended to start the simulator from a state simulated before and saved to file using the function \texttt{saveParticleStack()} in the the file \texttt{save\_funcs.c}. In principle, the particle ensemble can also be generated otherwise (with all the required properties for each particle) and imported by the simulator. The simulator reads the input file using the function \texttt{readParticleStack()} in the file \texttt{particle\_initialization.c}. The filename of the particle ensemble must be named as \texttt{*particle*.csv}, where the string "particle" is used to correctly identify the file as an input for the initial condition in the form of a particle ensemble.
+
+\TIP{The total number of initialized particles should not exceed the global maximum specified in the configuration file. A total of at most half the maximum value is advisable to accommodate particle generation using reasonable time steps.}
+
+The execution of the simulator with the specification of an initial condition in the form of a Wigner function in a CSV file is done as follows:
+\begin{lstlisting}
+$> cd ViennaWD/build/wigner_ensemble_monte_carlo/
+$> ./wemcsim ../../wigner_ensemble_monte_carlo/examples/configuration.lua \
+   /dir_with_initial_conditions/wigner_IC_example.csv
+\end{lstlisting}
+Similarly, the MPI-enabled version can be called; an example where both a potential profile and an initial condition in the form of a particle ensemble is specified is done as follows:
+\begin{lstlisting}
+$> cd ViennaWD/build/wigner_ensemble_monte_carlo/
+$> mpirun -np 4 ./wemcsim_mpi \
+   ../../wigner_ensemble_monte_carlo/examples/configuration.lua \
+   /dir_with_initial_conditions/particle_ensemble_IC_example.csv \
+   /dir_with_potentials/potential_example.csv
+\end{lstlisting}
+
+
+\subsubsection{Working directory}
+The directory where files, containing the physical quantities specified in the Lua file, are saved can be specified by an additional argument:
+
+\begin{lstlisting}
+$> mkdir ~/work_dir
+$> cd ViennaWD/build/wigner_ensemble_monte_carlo/
+$> mpirun -np 4 ./wemcsim_mpi \
+   ../../wigner_ensemble_monte_carlo/examples/configuration.lua ~/work_dir
+\end{lstlisting}
+
+If no directory is specified, the default directory used is \texttt{/tmp/}.
+
+\subsection{Output}
+
+The WEMC simulator can calculate various physical quantities and distributions, which are saved in the working directory with a time stamp, using the file names and functions specified in Table~\ref{tab:save-funcs}. The associated functions can be found in \texttt{src/save\_funcs.c} and are summoned at the specified save interval in the function \texttt{saveData()}. In the case of a parallel execution with MPI, the quantities associated to the subdomain of each process are saved and must be merged by a post-processing script (see Section~\ref{sec:post-proc}).
+
+The quantities are represented in the spatial and/or $k$ domain(s) as histograms and follow a similar template: the range of the bins (i.e. minimum (inclusive) and maximum (exclusive) value) is followed by the probability of finding a particle within the stated range of the bin(s). Negative values may arise  for 'probabilities' of (partial) Wigner distributions or in physical quantities due to numerical approximations/noise made when solving the Wigner equation. 
+%The quantities can be automatically plotted using the provided plotting scripts (for gnuplot). 
+%\begin{lstlisting}
+%$> cd build
+%$> gnuplot
+%gnuplot> plot 'density_t20.csv' u 3:5 with lines
+%\end{lstlisting}
+
+%\TIP{Very small negative values for probabilities may arise due to \linebreak numerical approximations that are made in solving the Wigner equation}
+
+
+\NOTE{ The particle stack and Wigner function result in very large file size(s) and should not be saved regularly to avoid excessive file I/O. }
+
+\begin{table}[h]
+\caption{Simulator output\label{tab:save-funcs} }
+\begin{widetable}{\columnwidth}{lll}
+\toprule
+Data & File name & Function\\
+\midrule
+Spatial distribution & density\_t*.csv & \texttt{saveDensity()}\\
+Momentum distribution & Kdistrib\_t*.csv & \texttt{saveKdistrib()} \\
+Particle stack & particleStack\_t*.csv & \texttt{saveParticleStack()}\\
+Wigner function & wignerFunciton\_t*.csv & \texttt{saveWignerFunction()}\\
+Potential profile & potential\_profile\_t*.csv & \texttt{savePotential()}\\
+Particle generation rate & gamma.csv & \texttt{saveGamma()}\\
+Energy distribution & energy\_t*.csv & \texttt{saveEnergyDistrib()}\\
+Current & current.csv & \texttt{saveCurrent()}\\
+Density distribution f(x,kx) & x\_kx\_t*.csv & \texttt{saveXDensK()}\\
+Density distribution f(y,ky) & y\_ky\_t*.csv & \texttt{saveYDensK()}\\
+\bottomrule
+\end{widetable}
+\end{table}
+
+
+\subsection{Post-processing}\label{sec:post-proc}
+
+After the simulator has completed its simulation the generated data needs to be merged (in the case of parallel execution) and (optionally) plots of the data can be generated. The quantities to be saved/merged and (optionally) plotted are specified by flags, e.g. save\_density, in the Lua input file. There are three possible values for each flag, explained in Table~\ref{tab:save-flag-ops}.
+\begin{table}[!h]
+\caption{Save flag options\label{tab:save-flag-ops} }
+\begin{widetable}{\columnwidth}{lll}
+\toprule
+Flag value & Meaning\\
+\midrule
+0 & no output data generated by the simulator\\
+1 & calculate and save quantity; merged by post\_processing.py\\
+2 & calculate and save quantity; merged and plotted by post\_processing.py\\
+\bottomrule
+\end{widetable}
+\end{table}
+ 
+The Python script \texttt{tools/post\_processing.py} performs the merging and plotting tasks by reading the simulation setup file, \texttt{SimulationSetup.txt}. This file is generated by the simulator during execution in \texttt{work\_dir} and contains the values of the flags in the original input file and other information, e.g. the number of MPI processes, which are acquired at run-time. After the simulator (\texttt{wemcsim} or \texttt{wemcsim\_mpi}) is finished the script \texttt{tools/post\_processing.py} must be called manually; the working directory \texttt{work\_dir}, which contains the generated output data, must be specified as an argument:
+\begin{lstlisting}
+$> cd ViennaWD/wigner_ensemble_monte_carlo/tools/
+$> python post_processing.py /work_dir/
+\end{lstlisting}
+In case of a parallel execution with \texttt{wemcsim\_mpi}, the script merges the data files (prepended by a 'p' e.g. \texttt{p*\_density\_t*.csv} ) generated by the MPI processes into one file, which  represents the global domain, and then deletes the files associated with the sub-domains. The script saves the merged CSV files in the working directory (referred to as \texttt{work\_dir}). 
+
+After merging the data files, plots are generated for the quantities specified with a flag value of 2 and can be found in the folder \texttt{work\_dir/results}. The post-processing script prepares the data files (if needed) and calls the gnuplot scripts in \texttt{/plot\_scripts}. The plots are saved as images in the GIF file format, which requires the gif terminal to be available in gnuplot. The terminals installed for gnuplot can be checked as follows:
+\begin{lstlisting}
+$> gnuplot
+$> set terminal
+$> Available terminal types:
+$>           canvas  HTML Canvas object
+$>              cgm  Computer Graphics Metafile
+$>         epscairo  eps terminal based on cairo
+
+\end{lstlisting}
+If \texttt{gif} is not listed, the package \texttt{libgd2-dev} should be installed. This library also provides the jpeg and png functionality of gnuplot. Alternatively, the file format for the generated plots can be changed manually in the gnuplot scripts in \texttt{/plot\_scripts/} from gif to another terminal type.
+%Scripts for the visualization of quantities using gnuplot and/or Paraview are provided in the directory \texttt{plot\_scripts/}, but still require manual modifications of axes scales, file names etc.
+
+All merging and plotting can still be done be performed individually by manually calling the various plot and merge scripts, which \texttt{post\_processing.py} does automatically.
+\clearpage
+% ==============================================================================
+% ==============================================================================
+\section{License}  %\addcontentsline{toc}{chapter}{Appendix A: License}
+
+Copyright (c) 2013-2015, Institute for Microelectronics, TU Wien
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+% ==============================================================================
+% ==============================================================================
