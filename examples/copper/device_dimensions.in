@@ -1,7 +1,7 @@
-100e-9
-20e-9
-1e-7
-1e-9
-10
-100
-4
+deviceLength: 25e-9
+deviceHeight: 5e-9
+deviceWidth: 1e-7
+meshSize: 1e-9
+kTLevels: 10
+precision: 100
+threadsCount: 4

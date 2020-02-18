@@ -166,7 +166,7 @@ particle_t oooDrift(const_t constpar, geometry_t *geometry, phys_quant_t *phys_q
   particle.yPosition += dy;
 
   /*=== Check simulation boundaries ===*/
-//  printf("drift\n");
+  //  printf("drift\n");
   particle = oooCheckBoundary(geometry, phys_quantities, particle);
 //  printf("drift2\n");
 

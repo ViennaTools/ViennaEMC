@@ -29,10 +29,10 @@ SDcarriers_t oooSDcarrierNumber(const_t constpar, geometry_t *geometry, phys_qua
   int i, j;
   double denn;
   SDcarriers_t SDcarriers;
- 
+
   /* source contact */
-  i = 0; 
-  for (j = 0; j <= geometry->nymax; ++j) 
+  i = 0;
+  for (j = 0; j <= geometry->nymax; ++j)
   {
     denn = phys_quantities->doping[i][j] * constpar.Ni * 0.5;//0.5;
 //    denn = phys_quantities->doping[i][j] * 0.5;//0.5;
@@ -44,9 +44,9 @@ SDcarriers_t oooSDcarrierNumber(const_t constpar, geometry_t *geometry, phys_qua
 
   /* drain contact */
   i = geometry->nxmax;
-  for (j = 0; j <= geometry->nymax; ++j) 
+  for (j = 0; j <= geometry->nymax; ++j)
   {
-    denn = phys_quantities->doping[i][j] * constpar.Ni * 0.5; 
+    denn = phys_quantities->doping[i][j] * constpar.Ni * 0.5;
 //    denn = phys_quantities->doping[i][j] * 0.5; 
     if (j == 0 || j == geometry->nymax)  denn *= 0.5;
 
@@ -68,13 +68,13 @@ int oooCheckSourceDrainContacts(const_t constpar, geometry_t *geometry, scatpar_
   static int SDcarriers_init = 0;
 
   /*=== Calculate number of carriers in source and drain regions (called only once) ===*/
-  if (SDcarriers_init == 0) 
+  if (SDcarriers_init == 0)
   {
     SDcarriers = oooSDcarrierNumber(constpar, geometry, phys_quantities);
     SDcarriers_init = 1;
   }
 
-  for (j = 0; j <= geometry->nymax; ++j) 
+  for (j = 0; j <= geometry->nymax; ++j)
   {
     npts[j] = 0;
     nptd[j] = 0;
@@ -101,7 +101,7 @@ int oooCheckSourceDrainContacts(const_t constpar, geometry_t *geometry, scatpar_
 //          printf("nScarriers[%i] = %i\n",jy,SDcarriers.nScarriers[jy]);
 	if (npts[jy] < SDcarriers.nScarriers[jy])
 	  npts[jy] += particles[n].p[7];
-	else 
+	else
 	{
 //          printf("del - nScarriers[%i] = %i, ix = %i, npts[%i] = %i\n",jy, SDcarriers.nScarriers[jy], ix, jy,npts[jy]);
 	  particles[n].ip = 9;
@@ -115,7 +115,7 @@ int oooCheckSourceDrainContacts(const_t constpar, geometry_t *geometry, scatpar_
       {
 	if (nptd[jy] < SDcarriers.nDcarriers[jy])
 	  nptd[jy] += particles[n].p[7];
-	else 
+	else
 	{
 //          printf("del - nDcarriers[%i] = %i, ix = %i, nptd[%i] = %i\n",jy, SDcarriers.nDcarriers[jy], ix, jy,nptd[jy]);
 	  particles[n].ip = 9;
@@ -128,20 +128,20 @@ int oooCheckSourceDrainContacts(const_t constpar, geometry_t *geometry, scatpar_
 //printf("1. nptd[%i] = %i\n", 10, npts[10]);
 //printf("1. scatpar->n_used = %i\n", scatpar->n_used);
 
- 
+
   /*=== Create carriers at the source and drain contacts ===*/
 
   /* source contact */
   ix = 0;
 //printf("SC_a scatpar->n_used = %i\n", scatpar->n_used);
 //        printf("\n\n");
-  for (jy = 0; jy <= geometry->nymax; ++jy) 
+  for (jy = 0; jy <= geometry->nymax; ++jy)
   {
-      nEleDiff = SDcarriers.nScarriers[jy] - npts[jy]; 
+      nEleDiff = SDcarriers.nScarriers[jy] - npts[jy];
       if (nEleDiff < 0)  continue;
-    
+
       ne = scatpar->n_used;
-      while(nEleDiff > 0) 
+      while(nEleDiff > 0)
       {
 //      printf("nScarriers[%i] = %i, ix = %i, npts[%i] = %i\n",jy, SDcarriers.nScarriers[jy], ix, jy,npts[jy]);
         ++ne;
@@ -157,13 +157,13 @@ int oooCheckSourceDrainContacts(const_t constpar, geometry_t *geometry, scatpar_
 
   /* drain contact */
   ix = geometry->nxmax;
-  for (jy = 0; jy <= geometry->nymax; ++jy) 
+  for (jy = 0; jy <= geometry->nymax; ++jy)
   {
       nEleDiff = SDcarriers.nDcarriers[jy] - nptd[jy];
       if (nEleDiff < 0)  continue;
-      
+
       ne = scatpar->n_used;
-      while(nEleDiff > 0) 
+      while(nEleDiff > 0)
       {
 //        printf("nDcarriers[%i] = %i, ix = %i, nptd[%i] = %i\n",jy, SDcarriers.nDcarriers[jy], ix, jy,nptd[jy]);
 	++ne;
@@ -179,40 +179,35 @@ int oooCheckSourceDrainContacts(const_t constpar, geometry_t *geometry, scatpar_
 
 
 /********************************************************************/
-/* Delete extra particles if their ip-number iv=9 (Dev.independent) */ 
+/* Delete extra particles if their ip-number iv=9 (Dev.independent) */
 /********************************************************************/
-int oooDeleteParticles(scatpar_t *scatpar, el_data_t *particles)
-{
-  static int i, j, nFix, flagConv;
-  
-  #pragma omp parallel
-  #pragma omp for
-  for (i = 0; i <= scatpar->n_used; ++i) 
-    if (particles[i].ip == 9)
-    {
-      flagConv = 0;
-      nFix = scatpar->n_used + 1;
+int oooDeleteParticles(scatpar_t *scatpar, el_data_t *particles) {
+    static int i, j, nFix, flagConv;
 
-      while(! flagConv) 
-      {
-	if (particles[nFix].ip != 9)
-	{
-//printf("HERE!!\n");
-	  particles[i].ip = particles[nFix].ip;
+#pragma omp parallel for shared(scatpar, particles) private(flagConv, nFix)
+    for (i = 0; i <= scatpar->n_used; ++i) {
+    if (particles[i].ip == 9) {
+        flagConv = 0;
+        nFix = scatpar->n_used + 1;
 
-	  for (j = 0; j <= 7; ++j) 
-	    particles[i].p[j] = particles[nFix].p[j]; 
+        while (!flagConv) {
+            if (particles[nFix].ip != 9) {
+                particles[i].ip = particles[nFix].ip;
 
-	  particles[i].energy = particles[nFix].energy; 
-	  particles[nFix].ip = 9; 
-	  --nFix;
-	  flagConv = 1;
-	}
+                for (j = 0; j <= 7; ++j)
+                    particles[i].p[j] = particles[nFix].p[j];
 
-	--nFix;
-	if (nFix < i)  flagConv = 1;
-      }
+                particles[i].energy = particles[nFix].energy;
+                particles[nFix].ip = 9;
+                --nFix;
+                flagConv = 1;
+            }
+
+            --nFix;
+            if (nFix < i) flagConv = 1;
+        }
     }
+}
 
   /* set n_used to last valid particle */
   while(1)
@@ -220,9 +215,9 @@ int oooDeleteParticles(scatpar_t *scatpar, el_data_t *particles)
 //printf("scatpar->n_used = %i...\n", scatpar->n_used);
       if (particles[scatpar->n_used].ip != 9) break;
       --scatpar->n_used;
-      if (scatpar->n_used < 0) break; 
+      if (scatpar->n_used < 0) break;
 //printf("scatpar->n_used = %i...\n", scatpar->n_used);
-  } 
+  }
 
   return 0;
 }
