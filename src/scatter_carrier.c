@@ -27,7 +27,7 @@ particle_t oooIsotropic_g(const_t constpar, scatpar_t *scatpar, particle_t parti
 {
   static double rknew, fi, ct, st;
 
-  particle.e += scatpar->w[*iFix - 1][particle.iRegion - 1];
+  particle.e += scatpar->w[*iFix - 1];
   /*=== Update carrier wavevector ===*/
   rknew = constpar.smh * sqrt(particle.e * (constpar.af * particle.e + 1.0));
 
@@ -52,7 +52,7 @@ particle_t oooIsotropic_f(const_t constpar, scatpar_t *scatpar, particle_t parti
   static int iv0;
 
   /*=== Update carrier energy ===*/
-  particle.e += scatpar->w[*iFix - 1][particle.iRegion - 1];
+  particle.e += scatpar->w[*iFix - 1];
   /*=== Update carrier wavevector ===*/
   rknew = constpar.smh * sqrt(particle.e * (constpar.af * particle.e + 1.0));
 
@@ -178,18 +178,18 @@ particle_t oooScatterCarrier(const_t constpar, scatpar_t *scatpar, particle_t pa
   if (loc > NLEV)  loc = NLEV;
 
   /*=== Select scattering mechanism ===*/
-  iTop = scatpar->maxScatMech[particle.iRegion - 1];
+  iTop = scatpar->maxScatMech;
   rr = oooRand();
-  if (rr >= scatpar->ScatTable[loc - 1][iTop - 1][particle.iRegion - 1])
+  if (rr >= scatpar->ScatTable[loc - 1][iTop - 1])
       return particle; /* self-scattering */
 
-  if (rr < scatpar->ScatTable[loc - 1][0][particle.iRegion - 1])
+  if (rr < scatpar->ScatTable[loc - 1][0])
     iMech = 1;
   else if (iTop > 1)
     for (i = 1; i <= iTop - 1; ++i)
     {
-      boundLower = scatpar->ScatTable[loc - 1][i - 1][particle.iRegion - 1];
-      boundUpper = scatpar->ScatTable[loc - 1][i][particle.iRegion - 1];
+      boundLower = scatpar->ScatTable[loc - 1][i - 1];
+      boundUpper = scatpar->ScatTable[loc - 1][i];
       if (rr >= boundLower && rr < boundUpper)
       {
 	iMech = i + 1;
@@ -198,7 +198,7 @@ particle_t oooScatterCarrier(const_t constpar, scatpar_t *scatpar, particle_t pa
     }
 
   /*=== Perform scattering (change energy and randomize momentum) ===*/
-  selectMech = scatpar->flagMech[iMech - 1][particle.iRegion - 1];
+  selectMech = scatpar->flagMech[iMech - 1];
 
   if      (selectMech == 1)  particle = oooIsotropic_g(constpar, scatpar, particle, &iMech);
   else if (selectMech == 2)  particle = oooIsotropic_f(constpar, scatpar, particle, &iMech, &selectMech);

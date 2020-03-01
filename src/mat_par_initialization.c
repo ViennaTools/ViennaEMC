@@ -96,7 +96,7 @@ int oooScatParInitialization(scatpar_t *scatpar) {
     scatpar->vsound = 9040.0;    /* [m/s]  */
     scatpar->sigma = 6.55;        /* [eV]   */
     scatpar->defpot0g = 5.23e10;    /* [eV/m] */
-    scatpar->defpot0f = 5.23e10;    /* [eV/m] */
+    scatpar->defpot0f = 5.23e10;    /* [eV/m ] */
     scatpar->defpot1g = 0.0;        /* [eV/m] */
     scatpar->defpot1f = 0.0;        /* [eV/m] */
     scatpar->phonon0g = 63.0e-3;    /* [eV]   */

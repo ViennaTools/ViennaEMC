@@ -34,7 +34,7 @@ SDcarriers_t oooSDcarrierNumber(const_t constpar, geometry_t *geometry, phys_qua
   i = 0;
   for (j = 0; j <= geometry->nymax; ++j)
   {
-    denn = phys_quantities->doping[i][j] * constpar.Ni * 0.5;//0.5;
+    denn = phys_quantities->doping * constpar.Ni * 0.5;//0.5;
 //    denn = phys_quantities->doping[i][j] * 0.5;//0.5;
     if (j == 0 || j == geometry->nymax)  denn *= 0.5;
 
@@ -46,7 +46,7 @@ SDcarriers_t oooSDcarrierNumber(const_t constpar, geometry_t *geometry, phys_qua
   i = geometry->nxmax;
   for (j = 0; j <= geometry->nymax; ++j)
   {
-    denn = phys_quantities->doping[i][j] * constpar.Ni * 0.5;
+    denn = phys_quantities->doping * constpar.Ni * 0.5;
 //    denn = phys_quantities->doping[i][j] * 0.5; 
     if (j == 0 || j == geometry->nymax)  denn *= 0.5;
 

@@ -60,7 +60,7 @@ int oooInitKspaceFD(const_t constpar, geometry_t *geometry, scatpar_t *scatpar, 
 
   /*=== Initial free-flight ===*/
   do { rr = oooRand(); } while (rr <= 1e-6);
-  tc = -log(rr) * scatpar->taumax[iRegion - 1]; 
+  tc = -log(rr) * scatpar->taumax;
 //  printf("scatpar->taumax[iRegion - 1] = %e \n", scatpar->taumax[iRegion - 1]);
 //  printf("tc = %e \n", tc);
 
@@ -123,7 +123,7 @@ int oooInitKspaceMW(const_t constpar, geometry_t *geometry, scatpar_t *scatpar, 
 
   /*=== Initial free-flight ===*/
   do { rr = oooRand(); } while (rr <= 1e-6);
-  tc = -log(rr) * scatpar->taumax[iRegion - 1]; 
+  tc = -log(rr) * scatpar->taumax;
 //  printf("scatpar->taumax[iRegion - 1] = %e \n", scatpar->taumax[iRegion - 1]);
 //  printf("tc = %e \n", tc);
 

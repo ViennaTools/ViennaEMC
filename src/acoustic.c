@@ -23,7 +23,7 @@
 /*  Calculation of acoustic phonon scattering rate                  */
 /********************************************************************/
 /*=== Acoustic scattering rate for the X Valleys ===*/
-int oooRateAcoustic(const_t constpar, scatpar_t *scatpar, int *iCount, int *iReg)
+int oooRateAcoustic(const_t constpar, scatpar_t *scatpar, int *iCount)
 {
   static int i;
   static double scatRate, Const, ee, fe, cL;
@@ -45,13 +45,13 @@ int oooRateAcoustic(const_t constpar, scatpar_t *scatpar, int *iCount, int *iReg
     ee = i * scatpar->de;
     fe = ee * (constpar.af * ee + 1.0);
     scatRate = Const * sqrt(fe) * (constpar.af2 * ee + 1.0);
-    scatpar->ScatTable[i - 1][*iCount - 1][*iReg - 1] = scatRate;
+    scatpar->ScatTable[i - 1][*iCount - 1] = scatRate;
     fprintf(output10, "%f \t %e \n", ee, scatRate); 
   }
   fclose(output10);
 
-  scatpar->flagMech[*iCount - 1][*iReg - 1] = 1;
-  scatpar->w[*iCount - 1][*iReg - 1] = 0.0;
+  scatpar->flagMech[*iCount - 1] = 1;
+  scatpar->w[*iCount - 1] = 0.0;
 
   return 0;
 }

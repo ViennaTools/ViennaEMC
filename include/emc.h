@@ -135,15 +135,15 @@ typedef struct
     double phonon0g, phonon0f, phonon1g, phonon1f;
 
     /*=== scattering table parameters ===*/
-    double de, w[MAXSC][DOPREG], ScatTable[NLEV][MAXSC][DOPREG];
-    int maxScatMech[DOPREG], flagMech[MAXSC][DOPREG];
+    double de, w[MAXSC], ScatTable[NLEV][MAXSC];
+    int maxScatMech, flagMech[MAXSC];
 
     /*=== scattering mechanism selection flags ===*/
     int acousticscattering, coulombscattering;
     int intervalley0g, intervalley0f, intervalley1g, intervalley1f;
 
     double dt, totalTime, averTime, transientTime;    /* timestep, total simulation time, averaging time and transient time */
-    double taumax[DOPREG];
+    double taumax;
 
     int surfaceroughness;
     int n_used;                        /* number of particles currently in use */
@@ -178,7 +178,7 @@ typedef struct {
 /*=== data structure for physical simulation quantities ===*/
 typedef struct {
     double potential[MAXNX][MAXNY];
-    double doping[MAXNX][MAXNY];
+    double doping;
     double elecDensity[MAXNX][MAXNY];
 
     double fxField[MAXNX][MAXNY], fyField[MAXNX][MAXNY];        /* electric field */
@@ -262,7 +262,7 @@ double oooIntegrate(const_t, double);
 /*=== core functions ===*/
 output_t *EMC(const_t, geometry_t *, scatpar_t *, phys_quant_t *);
 double oooRand(void);
-int oooApplyVoltage(const_t, geometry_t *, phys_quant_t *);
+int oooApplyVoltage(geometry_t *, phys_quant_t *);
 int oooPoissonSOR(const_t, geometry_t *, phys_quant_t *, int);
 int oooDistributePotential(const_t, geometry_t *, scatpar_t *, phys_quant_t *);
 int oooElectricFieldUpdate(const_t, geometry_t *, scatpar_t *, phys_quant_t *, double *);
@@ -272,11 +272,11 @@ int oooChargeAssignmentNEC(const_t, geometry_t *, scatpar_t *, el_data_t *, phys
 
 /*=== Drift and scattering functions ===*/
 particle_t oooDrift(const_t, geometry_t *, phys_quant_t *, particle_t, double *);
-int oooScatteringTable(const_t, scatpar_t *);
+int oooScatteringTable(scatpar_t *);
 particle_t oooScatterCarrier(const_t, scatpar_t *, particle_t);
 int oooFreeFlightScatter(const_t, geometry_t *, scatpar_t *, el_data_t *, phys_quant_t *);
-int oooRateCoulombBH(const_t, scatpar_t *, int *, int *);
-int oooRenormalizeTable(scatpar_t *, int *, int *);
+int oooRateCoulombBH(const_t, scatpar_t *, int *);
+int oooRenormalizeTable(scatpar_t *, int);
 double oooRateRelaxation();
 
 int oooAveragePotential(geometry_t *, phys_quant_t *, int, double);

@@ -23,7 +23,7 @@
 /* Calculation of COULOMB SCATTERING rate (Brooks-Herring approach) */
 /* Assumption ==> elastic scattering process                        */
 /********************************************************************/
-int oooRateCoulombBH(const_t constpar, scatpar_t *scatpar, int *iCount, int *iReg)
+int oooRateCoulombBH(const_t constpar, scatpar_t *scatpar, int *iCount)
 {
   static int i;
   static double debyeLengthSq, Const, ee, ge, factor, scatRate;
@@ -51,14 +51,14 @@ int oooRateCoulombBH(const_t constpar, scatpar_t *scatpar, int *iCount, int *iRe
 //    scatRate = Const * factor;
 
 //    scatpar->ScatTable[i - 1][*iCount - 1][*iReg - 1] = scatRate;
-    scatpar->ScatTable[i - 1][*iCount - 1][*iReg - 1] = 1.0/constpar.tau_ee;
+    scatpar->ScatTable[i - 1][*iCount - 1] = 1.0/constpar.tau_ee;
 //    fprintf(output10,"%f \t %e \n", ee, scatRate); 
   }
 //  fclose(output10);
   
 //  scatpar->flagMech[*iCount - 1][*iReg - 1] = 3;
-  scatpar->flagMech[*iCount - 1][*iReg - 1] = 4;
-  scatpar->w[*iCount - 1][*iReg - 1] = 0.0;
+  scatpar->flagMech[*iCount - 1] = 4;
+  scatpar->w[*iCount - 1] = 0.0;
 
   return 0;
 }

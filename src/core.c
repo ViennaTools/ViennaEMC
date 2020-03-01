@@ -43,7 +43,7 @@ output_t *EMC(const_t constants, geometry_t *geometry, scatpar_t *scatpar, phys_
     /*=== specify doping and initial potential in various regions ===*/
     oooInitializeDopingPotential(constants, geometry, scatpar, phys_quantities);
     /*=== calculate the scattering table ===*/
-    oooScatteringTable(constants, scatpar);
+    oooScatteringTable(scatpar);
     printf("===========================================================\n");
 
     CFACT = constants.q / scatpar->dt;
@@ -54,7 +54,7 @@ output_t *EMC(const_t constants, geometry_t *geometry, scatpar_t *scatpar, phys_
     constants.conv_tolerance /= constants.vt;
 
     /*=== initialize potential again and write it out ===*/
-    oooApplyVoltage(constants, geometry, phys_quantities);
+    oooApplyVoltage(geometry, phys_quantities);
     oooPoissonSOR(constants, geometry, phys_quantities, 0);
     oooElectricFieldUpdate(constants, geometry, scatpar, phys_quantities, &Time);
     oooWritePotential(constants, geometry, phys_quantities, 1, 0);
@@ -70,7 +70,7 @@ output_t *EMC(const_t constants, geometry_t *geometry, scatpar_t *scatpar, phys_
     /*=== apply bias at the contacts ===*/
     phys_quantities->inputVoltage_Vs = phys_quantities->inputVs / constants.vt;
     phys_quantities->inputVoltage_Vd = phys_quantities->inputVd / constants.vt;
-    oooApplyVoltage(constants, geometry, phys_quantities);
+    oooApplyVoltage(geometry, phys_quantities);
 
     /*=== start the Boltzmann Monte Carlo procedure ===*/
     /*=== synchronize the times ===*/

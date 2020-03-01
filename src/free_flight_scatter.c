@@ -89,10 +89,10 @@ int oooFreeFlightScatter(const_t constpar, geometry_t *geometry, scatpar_t *scat
     if (dtau <= scatpar->dt)
       do
       {
-	if (scatpar->maxScatMech[particle.iRegion - 1] > 0) 
+	if (scatpar->maxScatMech > 0)
             particle = oooScatterCarrier(constpar, scatpar, particle); //scatter takes place
 	do { rr = oooRand(); } while (rr <= 1e-6);
-	dt3 = -log(rr) * scatpar->taumax[particle.iRegion - 1];
+	dt3 = -log(rr) * scatpar->taumax;
 	dtp = scatpar->dt - dtau; 	/* remaining time to scatter in dt-interval */
 	dt2 = (dt3 <= dtp ? dt3 : dtp); /* min */
 	particle = oooDrift(constpar, geometry, phys_quantities, particle, &dt2);

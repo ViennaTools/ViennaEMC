@@ -59,13 +59,13 @@ int oooRateIntervalley(const_t constpar, scatpar_t *scatpar, intervalley_param_t
     else
       absorption = ab * sqrt(gf) * (constpar.af2 * ef + 1.0);
 
-    scatpar->ScatTable[i - 1][*iCount - 1][*iReg - 1] = absorption;
+    scatpar->ScatTable[i - 1][*iCount - 1] = absorption;
     fprintf(output10,"%f \t %e \n", ee, absorption); 
   }
   fclose(output10);
   
-  scatpar->flagMech[*iCount - 1][*iReg - 1] = intervalley->i_mech;
-  scatpar->w[*iCount - 1][*iReg - 1] =  *w0 -intervalley->deltaFi;
+  scatpar->flagMech[*iCount - 1] = intervalley->i_mech;
+  scatpar->w[*iCount - 1] =  *w0 -intervalley->deltaFi;
     
   /*=== Emission ===*/
   ++(*iCount);
@@ -85,13 +85,13 @@ int oooRateIntervalley(const_t constpar, scatpar_t *scatpar, intervalley_param_t
     if (ef <= 0.0)  emission = 0.0;
     else            emission = em * sqrt(gf) * (constpar.af2 * ef + 1.0);
     
-    scatpar->ScatTable[i - 1][*iCount - 1][*iReg - 1] = emission;
+    scatpar->ScatTable[i - 1][*iCount - 1] = emission;
     fprintf(output11,"%f \t %e \n", ee, emission); 
   }
   fclose(output11);
 
-  scatpar->flagMech[*iCount - 1][*iReg - 1] = intervalley->i_mech;
-  scatpar->w[*iCount - 1][*iReg - 1] =  -(*w0) - intervalley->deltaFi;
+  scatpar->flagMech[*iCount - 1] = intervalley->i_mech;
+  scatpar->w[*iCount - 1] =  -(*w0) - intervalley->deltaFi;
   
   return 0;
 }
