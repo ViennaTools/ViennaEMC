@@ -1,4 +1,11 @@
-Copyright (c) 2013, Institute for Microelectronics, TU Wien
+
+Parts of the code (located in the 'external/', 'dependencies/' or 
+'include/particleHandler/FMM' subfolders) have different licenses. 
+The individual licenses  apply for this specific part. Please consult 
+the respective LICENSE files.
+
+
+Copyright (c) 2023      Institute for Microelectronics, TU Wien.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

@@ -1,0 +1,18 @@
+@PACKAGE_INIT@
+
+set(CMAKE_CXX_STANDARD "17")
+
+set(VIENNAEMC_INCLUDE_DIRS "@VIENNAEMC_INCLUDE_DIRS@")
+set(VIENNAEMC_CONFIG_DIR "@VIENNAEMC_CONFIG_DIR@")
+
+find_package(OpenMP)
+if (OpenMP_FOUND)
+    list(APPEND VIENNAEMC_LIBRARIES OpenMP::OpenMP_CXX)
+endif()
+
+include(CMakeFindDependencyMacro)
+set(scalfmm_DIR @scalfmm_DIR@)
+find_dependency(scalfmm PATHS ${scalfmm_DIR} NO_DEFAULT_PATH)
+list(APPEND VIENNAEMC_LIBRARIES scalfmm)
+
+check_required_components("@PROJECT_NAME@")

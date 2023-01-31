@@ -1,0 +1,64 @@
+# cmake uninstall command
+if(NOT EXISTS "@CMAKE_BINARY_DIR@/install_manifest.txt")
+  message(FATAL_ERROR "Cannot find install manifest: @CMAKE_BINARY_DIR@/install_manifest.txt")
+endif()
+
+file(READ "@CMAKE_BINARY_DIR@/install_manifest.txt" files)
+string(REGEX REPLACE "\n" ";" files "${files}")
+foreach(file ${files})
+  message(STATUS "Uninstalling $ENV{DESTDIR}${file}")
+  if(IS_SYMLINK "$ENV{DESTDIR}${file}" OR EXISTS "$ENV{DESTDIR}${file}")
+    exec_program(
+      "@CMAKE_COMMAND@" ARGS
+      "-E remove \"$ENV{DESTDIR}${file}\""
+      OUTPUT_VARIABLE rm_out
+      RETURN_VALUE rm_retval)
+    if(NOT "${rm_retval}" STREQUAL 0)
+      message(FATAL_ERROR "Problem when removing $ENV{DESTDIR}${file}")
+    endif()
+  else(IS_SYMLINK "$ENV{DESTDIR}${file}" OR EXISTS "$ENV{DESTDIR}${file}")
+    message(STATUS "File $ENV{DESTDIR}${file} does not exist.")
+  endif()
+endforeach()
+
+# remove folder created by library (if no files are in it)
+# found at https://github.com/PointCloudLibrary/pcl/issues/2615
+if(EXISTS "@VIENNAEMC_INCLUDE_DIRS@")
+  file(GLOB_RECURSE VIENNAMEMC_FOLDER_FILES FOLLOW_SYMLINKS
+       LIST_DIRECTORIES false
+       "@VIENNAEMC_INCLUDE_DIRS@/*")
+  list(LENGTH VIENNAMEMC_FOLDER_FILES VIENNAMEMC_FOLDER_FILES_NUMBER)
+  if(VIENNAMEMC_FOLDER_FILES_NUMBER EQUAL 0)
+    message(STATUS "Uninstalling Directory \"@VIENNAEMC_INCLUDE_DIRS@\"")
+    exec_program("@CMAKE_COMMAND@"
+                 ARGS "-E remove_directory \"@VIENNAEMC_INCLUDE_DIRS@\""
+                 OUTPUT_VARIABLE rm_out RETURN_VALUE rm_retval)
+    if(NOT "${rm_retval}" STREQUAL 0)
+      message(FATAL_ERROR "Problem when removing \"@VIENNAEMC_INCLUDE_DIRS@\"")
+    endif()
+  endif()
+else(EXISTS "@VIENNAEMC_INCLUDE_DIRS@")
+  message(STATUS "Directory \"@VIENNAEMC_INCLUDE_DIRS@\" does not exist.")
+endif()
+
+# remove config-folder created by library (if no files are in it)
+# found at https://github.com/PointCloudLibrary/pcl/issues/2615
+if(EXISTS "@VIENNAEMC_CONFIG_DIR@")
+  file(GLOB_RECURSE VIENNAMEMC_FOLDER_FILES FOLLOW_SYMLINKS
+       LIST_DIRECTORIES false
+       "@VIENNAEMC_CONFIG_DIR@/*")
+  list(LENGTH VIENNAMEMC_FOLDER_FILES VIENNAMEMC_FOLDER_FILES_NUMBER)
+  if(VIENNAMEMC_FOLDER_FILES_NUMBER EQUAL 0)
+    message(STATUS "Uninstalling Directory \"@VIENNAEMC_CONFIG_DIR@\"")
+    exec_program("@CMAKE_COMMAND@"
+                 ARGS "-E remove_directory \"@VIENNAEMC_CONFIG_DIR@\""
+                 OUTPUT_VARIABLE rm_out RETURN_VALUE rm_retval)
+    if(NOT "${rm_retval}" STREQUAL 0)
+      message(FATAL_ERROR "Problem when removing \"@VIENNAEMC_CONFIG_DIR@\"")
+    endif()
+  endif()
+else(EXISTS "@VIENNAEMC_CONFIG_DIR@")
+  message(STATUS "Directory \"@VIENNAEMC_CONFIG_DIR@\" does not exist.")
+endif()
+
+
