@@ -72,6 +72,22 @@ public:
 
   CoordVec getExtent() const { return extent; }
 
+  /// returns the postion (index) in the array of the next value in the direction of idxDim (if it exists)
+  SizeType getNextValue_Idx(const CoordVec &currCoord, int idxDim) const {
+    checkNbrExistence(currCoord, idxDim, 1);
+    CoordVec nextCoord{currCoord};
+    nextCoord[idxDim]++;
+    return coordToIdx(nextCoord);
+  } 
+
+  /// returns the postion (index) in the array of the prev value in the direction of idxDim (if it exists)
+  SizeType getPrevValue_Idx(const CoordVec &currCoord, int idxDim) const {
+    checkNbrExistence(currCoord, idxDim, -1);
+    CoordVec prevCoord(currCoord);
+    prevCoord[idxDim]--;
+    return coordToIdx(prevCoord);
+  }
+
   /// returns next value in the direction of idxDim (if it exists)
   const T &getNextValue(const CoordVec &currCoord, int idxDim) const {
     checkNbrExistence(currCoord, idxDim, 1);
@@ -164,6 +180,16 @@ public:
     out << "\n";
   }
 
+  /// helper function that convert the position (index) to the corresponding coordinates
+  CoordVec idxToCoord(SizeType idx1D) const {
+    CoordVec coord;
+    for (int idxDim = 0; idxDim < Dim; ++idxDim) {
+        coord[idxDim] = idx1D % extent[idxDim];
+        idx1D /= extent[idxDim];
+    }
+    return coord;
+  }
+
   // --- iterator ----------------------------------------------------------
   typename std::vector<T>::const_iterator begin() const { return data.begin(); }
   typename std::vector<T>::const_iterator end() const { return data.end(); }
@@ -175,6 +201,12 @@ public:
   T &operator[](const CoordVec &coord) {
     checkCoord(coord);
     return data[coordToIdx(coord)];
+  }
+
+  // accesss the data at specific idx
+  T &operator[](SizeType idx) {
+    assert(idx < getSize() || "Index of Grid out of bounds.");
+    return data[idx];
   }
 
   /// accesses data structure at specific coordinate
@@ -203,7 +235,7 @@ public:
     return *this;
   }
 
-  /// helper that tells if coordinate is on boundary
+  // helper that tells if coordinate is on boundary
   bool onBoundary(const CoordVec &coord) const {
     for (SizeType idxDim = 0; idxDim < Dim; idxDim++) {
       if (coord[idxDim] == 0 || coord[idxDim] == extent[idxDim] - 1)
@@ -251,7 +283,7 @@ private:
     }
     assert(idx1D < getSize() || "Index of Grid out of bounds.");
     return idx1D;
-  }
+  } 
 
   /// helper that checks if index for dimension is valid
   void checkDimIdx(const SizeType idxDim) const {
