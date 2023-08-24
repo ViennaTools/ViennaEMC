@@ -4,9 +4,13 @@
 #include <PMSchemes/emcNGPScheme.hpp>
 #include <ParticleHandler/emcBasicParticleHandler.hpp>
 #include <ParticleType/emcElectron.hpp>
-#include <PoissonSolver/emcSORSolver.hpp>
 #include <emcGrainScatterMechanism.hpp>
 #include <emcSimulation.hpp>
+
+//Different Solvers
+#include <PoissonSolver/emcSORSolver.hpp>
+#include <PoissonSolver/emcJacobiSolver.hpp>
+#include <PoissonSolver/emcBicgSTABSolver.hpp>
 
 #include "../SiliconFunctions.hpp"
 
@@ -20,7 +24,7 @@ using MaterialType = emcMaterial<NumType>;
 using DeviceType = emcDevice<NumType, Dim>;
 using PMScheme = emcNGPScheme<NumType, DeviceType>;
 using ParticleHandler = emcBasicParticleHandler<NumType, DeviceType, PMScheme>;
-using PoissonSolver = emcSORSolver<NumType, DeviceType, ParticleHandler>;
+using PoissonSolver = emcSORSolver<NumType, DeviceType, ParticleHandler>; //!< adapt, if change the solver
 using SimulationType = emcSimulation<NumType, DeviceType, PoissonSolver,
                                      ParticleHandler, PMScheme>;
 
@@ -54,7 +58,7 @@ NumType grainScatterRate = 1e13; // 1 / s
 NumType transmissionProb = 1;
 
 //! number of used threads (in parallel region)
-const SizeType nrThreads = 4;
+const SizeType nrThreads = 10;
 
 /// example device: Resistor
 int main() {
@@ -64,7 +68,6 @@ int main() {
 #else
   std::cout << "\n>> Sequential version.\n\n";
 #endif
-
   for (auto voltage : appliedVoltages) {
     std::cout << "Current applied voltage = " << voltage << "\n";
     auto startSetup = high_resolution_clock::now();
@@ -85,8 +88,11 @@ int main() {
     device.addOhmicContact(emcBoundaryPos::XMIN, voltage, {origin[1]},
                            {deviceMaxPos[1]});
 
-    // set Poisson Solver (SOR - Solver)
-    PoissonSolver solver(device, 1e-4, 1.8);
+    /*! \brief Set poisson solver
+     * for BICGSTAB and Jacobi the third parameter give the max. allowed Iterations
+     * for SOR represent the third parameter omega (appropriate values in (0,2))
+     */
+    PoissonSolver solver(device, 1e-5, 1.8); //!< adapt if needed
     PMScheme pmScheme;
 
     // set Simulation Parameter
@@ -128,8 +134,7 @@ int main() {
     auto start = high_resolution_clock::now();
     simulation.execute();
     auto end = high_resolution_clock::now();
-    std::cout << "CPU time: " << duration_cast<seconds>(end - start).count()
-              << " s\n";
+    std::cout << "CPU time: " << duration_cast<seconds>(end - start).count() << " s\n";
   }
 
   return 0;

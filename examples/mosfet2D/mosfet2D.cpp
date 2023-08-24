@@ -4,14 +4,20 @@
 #include <memory>
 
 #include <ParticleHandler/emcBasicParticleHandler.hpp>
-#include <PoissonSolver/emcSORSolver.hpp>
 #include <SurfaceScatterMechanisms/emcConstantSurfaceScatterMechanism.hpp>
 #include <emcDevice.hpp>
 #include <emcSimulation.hpp>
 
+//Different Solvers
+#include <PoissonSolver/emcSORSolver.hpp>
+#include <PoissonSolver/emcJacobiSolver.hpp>
+#include <PoissonSolver/emcBicgSTABSolver.hpp>
+
 #include "../SiliconFunctions.hpp"
 #include "NECSchemeVWD.hpp"
 #include "electronVWD.hpp"
+
+#include <omp.h>
 
 const SizeType Dim = 2;
 const std::string fileNamePrefix = "mosfet";
@@ -23,7 +29,7 @@ using MaterialType = emcMaterial<NumType>;
 using DeviceType = emcDevice<NumType, Dim>;
 using PMScheme = emcNECSchemeVWD<NumType, DeviceType>;
 using ParticleHandler = emcBasicParticleHandler<NumType, DeviceType, PMScheme>;
-using PoissonSolver = emcSORSolver<NumType, DeviceType, ParticleHandler>;
+using PoissonSolver = emcBicgSTABSolver<NumType, DeviceType, ParticleHandler>; //!< adapt, if change the solver
 using SimulationType = emcSimulation<NumType, DeviceType, PoissonSolver,
                                      ParticleHandler, PMScheme>;
 
@@ -47,7 +53,7 @@ bool addRoughnessToOxideInterface = false;
 NumType probSpecularScattering = 0.5;
 
 //! number of used threads (in parallel region)
-const SizeType nrThreads = 4;
+const SizeType nrThreads = 10;
 
 /// creates an nChannel-MOSFET using the same parameter as ViennaWD Example 1
 int main() {
@@ -87,8 +93,11 @@ int main() {
       std::cout << "\tVd = " << Vd << " V\n";
       std::cout << "\tVg = " << Vg << " V\n";
 
-      // create Poisson Solver + PMScheme
-      PoissonSolver solver(device, 1e-4, 1.8);
+      /*! \brief Set poisson solver
+       * for BICGSTAB and Jacobi the third parameter give the max. allowed Iterations
+       * for SOR represent the third parameter omega (appropriate values in (0,2))
+       */
+      PoissonSolver solver(device, 1e-5, 1e4); //!< adapt if needed
       PMScheme pmScheme;
 
       // set simulation parameter + create simulation
