@@ -1,7 +1,7 @@
 #ifndef EMC_NONPARABOLIC_ANISOTROP_SINGLELAYER_VALLEY_HPP
 #define EMC_NONPARABOLIC_ANISOTROP_SINGLELAYER_VALLEY_HPP
 
-#include <math.h>
+#include <cmath>
 
 #include <ValleyTypes/emcAbstractValley.hpp>
 #include <emcConstants.hpp>

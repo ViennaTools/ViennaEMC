@@ -15,7 +15,7 @@ The description of this example is organized as follows:
 ## General Idea
 As already mentioned the general idea of that example is to simulate a resistor. The device characteristics that are of interest in this kind of simulation are the potential within the device and the current with different applied voltages.
 
-The average characteristics of the potential and the current at each ohmic contact are calculated in each step after a transient time has passed and are stored in seperate files. Additionally, the initial (equilibrium) and final particle characteristics for are tracked and stored in files.
+The average characteristics of the potential and the current at each ohmic contact are calculated in each step after a transient time has passed and are stored in separate files. Additionally, the initial (equilibrium) and final particle characteristics are tracked and stored in files.
 
 Different things can be studied when adapting this example:
 
@@ -44,11 +44,11 @@ The results are stored in multiple files:
 - **prefix (+ parameter) + potentialEq.txt**: This file contains the (initial) equilibrium potential in the device. First line represents the extent of the grid, then the potential at each point is written.
 - **prefix (+ parameter) + EFieldXEq.txt**: This file contains the (initial) equilibrium EField in the X-direction. Same structure as previous file.
 - **prefix (+ parameter) + EFieldYEq.txt**: This file contains the (initial) equilibrium EField in the Y-direction. Same structure as previous file.
-- **prefix (+ parameter) + ElectronsConcEq.txt**: This file contains the (initial) equilibrium concentration of the electrsons at each grid point. Same structure as previous file.
+- **prefix (+ parameter) + ElectronsConcEq.txt**: This file contains the (initial) equilibrium concentration of the electrons at each grid point. Same structure as previous file.
 - **prefix (+ parameter) + potentialAvg.txt**: This file contains the (final) average potential in the device. Same structure as previous file.
-- **prefix (+ parameter) + ElectronsConcAvg.txt**: This file contains the (final) average concentration of the electrsons at each grid point. Same structure as previous file.
+- **prefix (+ parameter) + ElectronsConcAvg.txt**: This file contains the (final) average concentration of the electrons at each grid point. Same structure as previous file.
 - **prefix (+ parameter) + ElectronsEq.txt**: This file contains the (initial) equilibrium characteristics of the simulated electrons. The first line represents the *maxPos* of the device and in the following each line represents the characteristics of one particle. 
 - **prefix (+ parameter) + ElectronsFinal.txt**: This file contains the final characteristics of the simulated electrons. Same structure as previous file.
 
-The file [plotResistor2DResults.py](plotResistor2D.py) shows how these resulting files can be plotted. For the usage of this file `emcPlottingFiles` has to be installed, as is described [here](../../README.md).
+The file [plotResistor2D.py](plotResistor2D.py) shows how these resulting files can be plotted. For the usage of this file `emcPlottingFiles` has to be installed, as is described [here](../../README.md).
 

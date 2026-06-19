@@ -15,7 +15,8 @@ void drift(T dt, emcParticle<T> &part, const ValleyType *valley,
   auto kOldECS = valley->transformToEllipseCoord(part.subValley, part.k);
   auto kNewECS = kOldECS;
   auto forceECS = valley->transformToEllipseCoord(part.subValley, force);
-  // calculate dK = - force * dt / hbar * vogtFactor in ECS
+  // dK = F*dt/hbar * vogtFactor in ECS
+  // F is charge * E_field, so it is already negative for electrons (-e*E)
   for (SizeType idxDim = 0; idxDim < 3; idxDim++) {
     kNewECS[idxDim] +=
         forceECS[idxDim] * dt * vogtFactor[idxDim] / constants::hbar;

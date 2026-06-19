@@ -3,7 +3,9 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <iostream>
+#include <limits>
 #include <random>
 #include <type_traits>
 #include <vector>
@@ -33,9 +35,11 @@ template <class T, SizeType Dim> T norm(const std::array<T, Dim> &vec) {
 }
 
 /// returns a normalized array, that points in the same direction than
-/// input
+/// input; no-op if the vector is zero
 template <class T, SizeType Dim> void normalize(std::array<T, Dim> &vec) {
   T normL2 = norm(vec);
+  if (normL2 == T(0))
+    return;
   std::for_each(vec.begin(), vec.end(),
                 [&normL2](T &entry) { entry /= normL2; });
 }
@@ -116,11 +120,16 @@ std::array<SizeType, Dim> maxPosToExtent(const std::array<T, Dim> &maxPos,
   return gridExtent;
 }
 
+// Pi constant for use in this header (avoids dependency on emcConstants.hpp)
+template <class T> constexpr T emcPi() {
+  return T(3.14159265358979323846L);
+}
+
 /// initialize vector in random direction with given norm
 /// using the 2 given random nrs between 0 and 1
 template <class T>
 std::array<T, 3> initRandomDirection(T norm, T rand1, T rand2) {
-  T phi = 2 * M_PI * rand1;
+  T phi = 2 * emcPi<T>() * rand1;
   T cosTheta = 1 - 2 * rand2;
   std::array<T, 3> res;
   res[0] = norm * std::sqrt(1 - cosTheta * cosTheta) * std::cos(phi);
@@ -134,20 +143,29 @@ std::array<T, 3>
 initRandomDirectionWithRespectToCurrentK(const std::array<T, 3> &k, T cosTheta,
                                          T rand) {
   std::array<T, 3> res;
+
   /*=== Calculate the rotation angles ===*/
   T kxy = std::sqrt(k[0] * k[0] + k[1] * k[1]);
-  T norm = std::sqrt(kxy * kxy + k[2] * k[2]);
-  T ct0 = k[2] / norm;
-  T st0 = kxy / norm;
-  T cfi0 = k[0] / kxy;
-  T sfi0 = k[1] / kxy;
+  T normK = std::sqrt(kxy * kxy + k[2] * k[2]);
+
+  // k is the zero vector — no well-defined rotation axis, return zero
+  if (normK == T(0)) {
+    res.fill(T(0));
+    return res;
+  }
+
+  T ct0 = k[2] / normK;
+  T st0 = kxy / normK;
+  // When k is aligned with z-axis, phi is undefined; any value is valid
+  T cfi0 = (kxy > T(0)) ? k[0] / kxy : T(1);
+  T sfi0 = (kxy > T(0)) ? k[1] / kxy : T(0);
 
   /*=== Randomize momentum in the rotated coordinate system ===*/
   T st = std::sqrt(1.0 - cosTheta * cosTheta);
-  T phi = 2.0 * M_PI * rand;
-  T kxp = norm * st * cos(phi);
-  T kyp = norm * st * sin(phi);
-  T kzp = norm * cosTheta;
+  T phi = 2.0 * emcPi<T>() * rand;
+  T kxp = normK * st * std::cos(phi);
+  T kyp = normK * st * std::sin(phi);
+  T kzp = normK * cosTheta;
 
   /*=== Return to the original coordinate system ===*/
   res[0] = kxp * cfi0 * ct0 - kyp * sfi0 + kzp * cfi0 * st0;

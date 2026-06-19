@@ -1,8 +1,9 @@
 #ifndef EMC_DEVICE_HPP
 #define EMC_DEVICE_HPP
 
-#include <math.h>
+#include <cmath>
 #include <numeric>
+#include <stdexcept>
 
 #include <emcConstants.hpp>
 #include <emcDopingProfile.hpp>
@@ -90,6 +91,10 @@ public:
         dopingProfile(maxPosToExtent(inMaxPos, inSpacing), material.getNi(),
                       material.getNi()),
         surface(maxPosToExtent(inMaxPos, inSpacing), thermalVoltage) {
+    if (debyeLength <= 0 || !std::isfinite(debyeLength))
+      throw std::domain_error(
+          "emcDevice: computed Debye length is non-positive or non-finite. "
+          "Check material intrinsic carrier concentration (Ni) and permittivity.");
     calcCellVolume();
   }
 
@@ -196,7 +201,9 @@ public:
                        barrierHeight);
   }
 
-  // TODO implement addSchottkyContact
+  // addSchottkyContact is not yet implemented.
+  // When added it will need barrier-height and ideality-factor parameters
+  // analogous to addGateContact, and a matching branch in the Poisson solvers.
 
   /// @brief helper function that tests if a position is out of bounds
   /// @param position position of interest

@@ -39,7 +39,7 @@ $$v_{HV} = \left( \sqrt{\frac{m}{m_1}},  \sqrt{\frac{m}{m_2}},  \sqrt{\frac{m}{m
 where m is either mostly either the DOS effective mass or the conduction effective mass. In case the valley is isotrop $v_{HV}=(1,1,1)$ should be used. Lastly, the conductive effective mass and the density of states (DOS) effective mass, which are returned by *getEffMassDOS()* and *getEffMassCond()* are determined by the geometric and harmonic mean of $m_1$, $m_2$ and $m_3$. 
 
 ### Degeneracy of the valley
-The degeneracy of the valley, which is retruned by the function *getDegeneracyFactor* is the number of subvalleys that is contained in this group of valleys and should thereby be an integer. As mentioned in the beginning if only one valley should be simulated this fucntion should return 1. 
+The degeneracy of the valley, which is returned by the function *getDegeneracyFactor* is the number of subvalleys that is contained in this group of valleys and should thereby be an integer. As mentioned in the beginning if only one valley should be simulated this function should return 1. 
 
 ### Bottom Energy of the valley
 The bottom energy of the valley is the energy at extremum of the valley in $eV$.  Currently it is assumed that each subvalley possesses the same bottom energy. This information is needed for specific scatter events between different groups of valleys, if only one group of valley is considered, this value can be set to 0. If multiple group of valleys are considered the energy difference between the bottom energy is the parameter of interest, meaning that a shift in all given energies is not important - as long as it is consistent in all given bottom energies of valleys.

@@ -2,7 +2,7 @@
 #define EMC_NONPARABOLIC_ANISOTROP_VALLEY_HPP
 
 #include <algorithm>
-#include <math.h>
+#include <cmath>
 
 #include <ValleyTypes/emcAbstractValley.hpp>
 #include <emcConstants.hpp>

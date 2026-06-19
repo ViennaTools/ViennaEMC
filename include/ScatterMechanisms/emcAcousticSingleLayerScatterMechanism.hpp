@@ -1,7 +1,7 @@
 #ifndef ACOUSTIC_SINGLE_LAYER_SCATTER_MECHANISM_HPP
 #define ACOUSTIC_SINGLE_LAYER_SCATTER_MECHANISM_HPP
 
-#include <math.h>
+#include <cmath>
 
 #include <ScatterMechanisms/emcScatterMechanism.hpp>
 #include <emcConstants.hpp>

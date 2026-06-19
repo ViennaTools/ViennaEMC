@@ -29,7 +29,7 @@ Since this is a header only project, it does not require any installation. Howev
 
 The following steps are recommended if you want to install the library and the dependencies:
 
-    git clone github.com/ViennaTools/ViennaEMC.git
+    git clone https://github.com/ViennaTools/ViennaEMC.git
     cd ViennaEMC
     mkdir build && cd build
     cmake .. -DCMAKE_INSTALL_PREFIX=/path/to/your/custom/install/
@@ -42,7 +42,7 @@ This will install the necessary headers and CMake files to the specified path. I
 
 If you want to use your own install of scalFMM, just specify the directory in CMake:
 
-    git clone github.com/ViennaTools/ViennaEMC.git
+    git clone https://github.com/ViennaTools/ViennaEMC.git
     cd ViennaEMC
     mkdir build && cd build
     cmake .. -DCMAKE_INSTALL_PREFIX=/path/to/your/custom/install/ -Dscalfmm_DIR=/path/to/scalfmm/install

@@ -353,7 +353,10 @@ private:
               T tFreeFlightNew =
                   partType->getNewTau(part.valley, part.region, this->rngs[0]);
               part.tau += tFreeFlightNew;
-              // TODO update force
+              // Force is not re-interpolated after mid-step scattering events;
+              // the pre-scatter field value is reused for the remainder of
+              // the time step. For slowly varying fields this is a reasonable
+              // approximation, but may introduce error in steep field gradients.
               removed = Base::driftParticle(
                   std::min(tRemaining, tFreeFlightNew), part, partType,
                   position, force, this->rngs[0]);
@@ -362,7 +365,9 @@ private:
           }
           part.tau -= tStep;
 
-          // TODO add grain scattering
+          // Grain scattering is not implemented in the FMM handler.
+          // Particles simulated with FMM will ignore grain boundaries.
+          // Use emcBasicParticleHandler if grain boundary effects are needed.
           if (removed) {
             removeParticle(tgt, idxCont);
             nettoPart[idxType][Base::device.getSurface().getOhmicContactIdx(

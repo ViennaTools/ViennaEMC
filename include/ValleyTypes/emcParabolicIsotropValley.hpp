@@ -1,7 +1,7 @@
 #ifndef EMC_PARABOLIC_ISOTROP_VALLEY_HPP
 #define EMC_PARABOLIC_ISOTROP_VALLEY_HPP
 
-#include <math.h>
+#include <cmath>
 
 #include <ValleyTypes/emcAbstractValley.hpp>
 #include <emcConstants.hpp>

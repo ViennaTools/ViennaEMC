@@ -1,7 +1,7 @@
 #ifndef EMC_NONPARABOLIC_ISOTROP_VALLEY_HPP
 #define EMC_NONPARABOLIC_ISOTROP_VALLEY_HPP
 
-#include <math.h>
+#include <cmath>
 
 #include <ValleyTypes/emcAbstractValley.hpp>
 #include <emcConstants.hpp>
@@ -45,7 +45,13 @@ public:
         effMass(inRelEffMass * inParticleMass), degFactor(inDegFactor),
         alpha(inAlpha), vogtFactor({1, 1, 1}), bottomEnergy(inBottomEnergy) {}
 
-  /// returns DOS effMass (energy-dependent)
+  /// Returns a mass-like scale factor used by scatter-rate formulas.
+  /// NOTE: this is NOT the standard energy-dependent DOS effective mass
+  /// m*(E) = m0*[(1+alpha*E)^0.5*(1+2*alpha*E)]^(2/3).
+  /// All built-in scatter mechanisms call this at the default E=0, so
+  /// they only use the band-edge mass m0. Do not call with non-zero energy
+  /// expecting the physical DOS mass — the exponent (1+2*alpha*E)^3 is not
+  /// the standard Kane-model result.
   T getEffMassDOS(T energy = 0) const {
     return effMass * std::pow(1 + 2 * alpha * energy, 3.);
   }

@@ -27,7 +27,7 @@ The particle characteristics that are of interest in this kind of simulation are
 - the average energy of the particles in each valley
 - the percentage of particles that are present in each valley (valley occupation)
 
-Those average particle characteristics are calculated in each step and stored in seperate files in the end of the simulation.
+Those average particle characteristics are calculated in each step and stored in separate files in the end of the simulation.
 
 Different things can be tested when adapting this example, e.g., the effect of different scatter mechanisms on the drift velocity. or the effects of variations in the band structure on the transport characteristics.
 
@@ -47,7 +47,7 @@ The number of simulated particles can be changed via adapting *maxPos* or *spaci
 
 ### Track velocity of particles (for calculation of mobility)
 The parameter *sampleVelocityOfParticles* allows the recording of the velocities of all particles which can be used for the calculation of the 
-velocity autocorrelation fucntion. If no field is applied this then can be used to calculate the diffusion coefficient / mobility of the material.
+velocity autocorrelation function. If no field is applied this then can be used to calculate the diffusion coefficient / mobility of the material.
 
 ##  Simulation Description
 
