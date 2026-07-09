@@ -1,7 +1,9 @@
 build*
+.claude/
 .vscode/
 html/
 .idea/
 __pycache__/
 dependencies/
 doxygen_config.txt
+Papers/

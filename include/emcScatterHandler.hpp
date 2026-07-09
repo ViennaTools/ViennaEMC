@@ -89,23 +89,21 @@ public:
 
   /// initializes + normalizes scatterTables
   void initScatterTables() {
-    for (auto &[idxValleyRegion, tablesOfValleyRegion] : scatterTables) {
-      for (SizeType idxTable = 0; idxTable < tablesOfValleyRegion.size();
-           idxTable++) {
-        SizeType idxMech = idxTableToIdxMech[idxValleyRegion][idxTable];
-        auto &currTable = tablesOfValleyRegion[idxTable];
-        for (SizeType energyLevel = 0; energyLevel < nrEnergyLevels;
-             energyLevel++) {
-          currTable.push_back(scatterMechanisms[idxMech]->getScatterRate(
-              (energyLevel + 1) * dE, std::get<1>(idxValleyRegion)));
-        }
-      }
-    }
-
-    if (grainScatterMech)
-      grainTau = 1. / grainScatterMech->getScatterRate();
-
+    fillScatterTables();
     writeTablesToFiles();
+    renormalizeTables();
+  }
+
+  /// Rebuild scatter tables without writing to files.
+  /// Call this after updating any dynamic scatter mechanism (e.g. phonon bath)
+  /// so that the look-up tables reflect new scatter rates.
+  void reinitScatterTables() {
+    // clear table values, keep structure (valley/region mapping)
+    for (auto &[idxValleyRegion, tablesOfValleyRegion] : scatterTables)
+      for (auto &currTable : tablesOfValleyRegion)
+        currTable.clear();
+    tau.clear();
+    fillScatterTables();
     renormalizeTables();
   }
 
@@ -219,6 +217,23 @@ public:
   }
 
 private:
+  void fillScatterTables() {
+    for (auto &[idxValleyRegion, tablesOfValleyRegion] : scatterTables) {
+      for (SizeType idxTable = 0; idxTable < tablesOfValleyRegion.size();
+           idxTable++) {
+        SizeType idxMech = idxTableToIdxMech[idxValleyRegion][idxTable];
+        auto &currTable = tablesOfValleyRegion[idxTable];
+        for (SizeType energyLevel = 0; energyLevel < nrEnergyLevels;
+             energyLevel++) {
+          currTable.push_back(scatterMechanisms[idxMech]->getScatterRate(
+              (energyLevel + 1) * dE, std::get<1>(idxValleyRegion)));
+        }
+      }
+    }
+    if (grainScatterMech)
+      grainTau = 1. / grainScatterMech->getScatterRate();
+  }
+
   SizeType getEnergyLevel(T energy) const {
     SizeType energyLevel = std::floor(energy / dE) - 1;
     if (energyLevel == -1)

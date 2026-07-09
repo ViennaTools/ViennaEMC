@@ -167,6 +167,10 @@ template <class T, class DeviceType> struct emcParticleType {
 
   void initScatterTables() { scatterHandler.initScatterTables(); }
 
+  /// Rebuild scatter tables without file I/O.
+  /// Call after updating dynamic scatter mechanisms (e.g. phonon bath).
+  void reinitScatterTables() { scatterHandler.reinitScatterTables(); }
+
   T getGrainTau() const { return scatterHandler.getGrainTau(); }
 
   T getTau(SizeType idxValley, SizeType idxRegion) const {
