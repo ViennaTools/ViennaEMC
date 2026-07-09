@@ -13,6 +13,6 @@ endif()
 include(CMakeFindDependencyMacro)
 set(scalfmm_DIR @scalfmm_DIR@)
 find_dependency(scalfmm PATHS ${scalfmm_DIR} NO_DEFAULT_PATH)
-list(APPEND VIENNAEMC_LIBRARIES scalfmm)
+list(APPEND VIENNAEMC_LIBRARIES scalfmm::scalfmm)
 
 check_required_components("@PROJECT_NAME@")

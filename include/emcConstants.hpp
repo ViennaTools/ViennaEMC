@@ -1,12 +1,12 @@
 #ifndef EMC_CONSTANTS_HPP
 #define EMC_CONSTANTS_HPP
 
-#include <math.h>
+#include <cmath>
 
 /// global physical constants using Si-Units
 namespace constants {
 /// Pi
-constexpr double pi = M_PI;
+constexpr double pi = 3.14159265358979323846;
 
 /// elementary charge [C]
 constexpr double q = 1.60219e-19;

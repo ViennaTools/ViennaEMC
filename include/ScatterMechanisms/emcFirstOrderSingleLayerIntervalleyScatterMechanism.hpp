@@ -1,7 +1,7 @@
 #ifndef EMC_FIRST_ORDER_SINGLE_LAYER_INTERVALLEY_SCATTER_MECHANISM_HPP
 #define EMC_FIRST_ORDER_SINGLE_LAYER_INTERVALLEY_SCATTER_MECHANISM_HPP
 
-#include <math.h>
+#include <cmath>
 #include <string>
 
 #include <ScatterMechanisms/emcScatterMechanism.hpp>

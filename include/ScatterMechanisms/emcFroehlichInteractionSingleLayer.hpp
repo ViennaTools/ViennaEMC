@@ -1,7 +1,7 @@
 #ifndef EMC_FROEHLICH_INTERACTION_SINGLE_LAYER_HPP
 #define EMC_FROEHLICH_INTERACTION_SINGLE_LAYER_HPP
 
-#include <math.h>
+#include <cmath>
 
 #include <ScatterMechanisms/emcScatterMechanism.hpp>
 #include <emcConstants.hpp>
@@ -15,7 +15,10 @@
  * (https://journals.aps.org/prb/abstract/10.1103/PhysRevB.85.115317)
  * Assumes parabolic bands.
  *
- * TODO: adapt current scattering for 2D case!
+ * NOTE: The scatterParticle() method uses the 3D formula from Ferry
+ * "Semiconductor Transport" p.220. It has not been verified for the 2D case.
+ * Results for single-layer materials may be inaccurate until a proper 2D
+ * angular distribution is derived and implemented.
  *
  * @param scatterConst pre-computed constant needed for calculation of
  * scatter rate
@@ -71,8 +74,8 @@ public:
   }
 
   /// \brief Inelastic, Anisotrop Scattering.
-  /// Formula found in Semiconductor Transport - Ferry page 220
-  /// TODO find out if formula really usable for 2D case?
+  /// Formula found in Semiconductor Transport - Ferry page 220.
+  /// NOTE: this formula is for 3D; applicability to 2D case is unverified.
   void scatterParticle(emcParticle<T> &particle, emcRNG &rng) const {
     // adapt + store energy
     T initEnergy = particle.energy;
@@ -80,8 +83,8 @@ public:
     particle.energy = finalEnergy;
     assert(particle.energy > 0);
 
-    // calculate the initial angle to the x-axis
-    T phi = std::atan(particle.k[1] / particle.k[0]);
+    // initial angle to x-axis; atan2 handles k[0]==0 correctly
+    T phi = std::atan2(particle.k[1], particle.k[0]);
 
     // calculate angle between final and initial state
     T f = 2 * std::sqrt(initEnergy * finalEnergy) /
@@ -195,8 +198,8 @@ public:
   }
 
   /// \brief Inelastic, Anisotrop Scattering.
-  /// Formula found in Semiconductor Transport - Ferry page 220
-  /// TODO find out if formula really usable for 2D case?
+  /// Formula found in Semiconductor Transport - Ferry page 220.
+  /// NOTE: this formula is for 3D; applicability to 2D case is unverified.
   void scatterParticle(emcParticle<T> &particle, emcRNG &rng) const {
     // adapt + store energy
     T initEnergy = particle.energy;
@@ -204,8 +207,8 @@ public:
     particle.energy = finalEnergy;
     assert(particle.energy > 0);
 
-    // calculate initial ange between k and x-axis
-    T phi = std::atan(particle.k[1] / particle.k[0]);
+    // initial angle between k and x-axis; atan2 handles k[0]==0 correctly
+    T phi = std::atan2(particle.k[1], particle.k[0]);
 
     // calculate angle between final and initial state
     T f = 2 * std::sqrt(initEnergy * finalEnergy) /

@@ -1,7 +1,7 @@
 #ifndef EMC_TEST_HPP
 #define EMC_TEST_HPP
 
-#include <math.h>
+#include <cmath>
 #include <string>
 
 #ifdef _MSC_VER

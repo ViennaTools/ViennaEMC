@@ -16,7 +16,7 @@ As already mentioned the general idea of that example is to simulate the electro
 - the average energy of the particles in each valley
 - the percentage of particles that are present in each valley (valley occupation)
 
-These average particle characteristics are calculated in each step and stored in seperate files in the end of the simulation.
+These average particle characteristics are calculated in each step and stored in separate files in the end of the simulation.
 
 Different things can be tested when adapting this example, either the effect of different electric field strengths or directions on the same material, the effect of different scatter mechanisms on the drift velocity or also the drift velocity for different materials.
 
@@ -33,7 +33,7 @@ Some of the parameters that are used and can be adapted are listed and described
 The *background electric field* can be set via the parameter *appliedFieldStrength* and *appliedFieldDirection*. As the name of those parameter states, the first parameter sets the strength (norm) and the second the direction of the electric field. The parameter *appliedFieldDirection* doesn't have to be a unit vector, it is normalized later in the code.
 
 ### Material
-The used material is defined by different constants. Additionally, the used material also determines the valleys (simplification of band structure) and the scatter mechanisms for that are applied within the simulation, but these characteristics are set for each used particle-type seperately (see  particleType).
+The used material is defined by different constants. Additionally, the used material also determines the valleys (simplification of band structure) and the scatter mechanisms for that are applied within the simulation, but these characteristics are set for each used particle-type separately (see  particleType).
 
 ### Geometry
 The geometry is assumed to be a cuboid with one corner at the origin (0,0,0) and one corner at *maxPos*. Furthermore the vector *spacing* sets the spacing in each direction of the grid that represents the simulated geometry.

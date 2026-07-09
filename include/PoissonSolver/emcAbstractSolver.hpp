@@ -41,7 +41,7 @@ struct emcAbstractSolver {
                                            const GridType &eConc,
                                            bool resetBC = true) = 0;
 
-  /*! \brief Calculates the bakcground potential.
+  /*! \brief Calculates the background potential.
    *
    * Assumes that particle concentrations are 0 (because they are handled by
    * FMM) adapts BC so that carrier effects are discarded.

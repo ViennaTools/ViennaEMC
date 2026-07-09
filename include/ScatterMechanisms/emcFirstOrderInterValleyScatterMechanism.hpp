@@ -12,7 +12,7 @@ template <class T>
 T getFirstOrderScatterConst(T defPot, T phEnergy, T rho, T temp,
                             SizeType nrFValleys, bool isAbsorption = true) {
   T result = nrFValleys * std::sqrt(2) * pow(constants::q, 5. / 2.) *
-             pow(defPot, 2) / (M_PI * rho * pow(constants::hbar, 4) * phEnergy);
+             pow(defPot, 2) / (constants::pi * rho * pow(constants::hbar, 4) * phEnergy);
   T nrPh =
       1. / (std::exp(constants::q * phEnergy / (constants::kB * temp)) - 1.);
   result = isAbsorption ? result * nrPh : result * (nrPh + 1);
@@ -108,7 +108,9 @@ public:
     if (energyFinal > 0) {
       T md = finalValley->getEffMassDOS();
       T alpha = finalValley->getNonParabolicity();
-      T gamma = finalValley->getGamma(energy);
+      // gamma uses the initial valley's non-parabolicity (initValley->getGamma)
+      // gammaF uses the final valley's non-parabolicity (finalValley->getGamma)
+      T gamma = initValley->getGamma(energy);
       T gammaF = finalValley->getGamma(energyFinal);
       return scatterConst * pow(md, 5. / 2.) * std::sqrt(gammaF) *
              (2 * alpha * energyFinal + 1.0) * (gamma + gammaF);
@@ -254,7 +256,9 @@ public:
     if (energyFinal > 0) {
       T md = finalValley->getEffMassDOS();
       T alpha = finalValley->getNonParabolicity();
-      T gamma = finalValley->getGamma(energy);
+      // gamma uses the initial valley's non-parabolicity (initValley->getGamma)
+      // gammaF uses the final valley's non-parabolicity (finalValley->getGamma)
+      T gamma = initValley->getGamma(energy);
       T gammaF = finalValley->getGamma(energyFinal);
       return scatterConst * pow(md, 5. / 2.) * std::sqrt(gammaF) *
              (2 * alpha * energyFinal + 1.0) * (gamma + gammaF);

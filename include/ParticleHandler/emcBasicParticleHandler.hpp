@@ -127,7 +127,10 @@ public:
                 idxToRemove.push_back(idxPart);
               }
             }
-            // TODO handle grain scattering as normal scattering?
+            // Grain scattering uses a separate free-flight timer (grainTau)
+            // rather than being interleaved with phonon scattering mid-step.
+            // This approximation is conservative but may slightly overestimate
+            // the grain-scattering rate when grainTau < tStep.
             particle.grainTau -= tStep;
             if (particle.grainTau <= 0 && !removed) {
               type->scatterParticleAtGrain(particle, currRNG);
