@@ -50,6 +50,29 @@ void initParticleKSpaceMaxwellian(emcParticle<T> &part,
   }
 }
 
+/// Initialize energy and wave-vector of a photo-excited particle at a fixed
+/// kinetic energy above the band edge, with a uniformly random k direction.
+/// Intended for hot-carrier photoexcitation (monochromatic excitation model).
+/// The boundary direction fix mirrors initParticleKSpaceMaxwellian so that
+/// particles born at edge cells are directed inward.
+template <class T, SizeType Dim, template <class, SizeType> class DeviceType,
+          class ValleyType>
+void initParticleKSpaceFixed(emcParticle<T> &part, T initEnergyEV,
+                             const std::array<SizeType, Dim> &coord,
+                             const DeviceType<T, Dim> &device,
+                             const ValleyType *valley, emcRNG &rng) {
+  std::uniform_real_distribution<T> dist(T(0), T(1));
+  part.energy = initEnergyEV;
+  part.k =
+      initRandomDirection(valley->getNormWaveVec(initEnergyEV), dist(rng), dist(rng));
+  auto extent = device.getGridExtent();
+  for (SizeType idxDir = 0; idxDir < Dim; idxDir++) {
+    if (((coord[idxDir] == 0) && (part.k[idxDir] < 0)) ||
+        ((coord[idxDir] == extent[idxDir] - 1) && (part.k[idxDir] > 0)))
+      part.k[idxDir] *= -1;
+  }
+}
+
 /// used for injection of particles at ohmic contacts.
 /// initialize energy and wave-vector of particle.
 /// energy is assigned using maxwellian distribution transversal to a near

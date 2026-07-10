@@ -1,5 +1,5 @@
-#ifndef EMC_ELECTRON_HPP
-#define EMC_ELECTRON_HPP
+#ifndef EMC_HOLE_HPP
+#define EMC_HOLE_HPP
 
 #include <ParticleType/emcParticleType.hpp>
 #include <emcConstants.hpp>
@@ -7,17 +7,25 @@
 #include <emcUtil.hpp>
 
 /**
- * @brief Electron Particle Type with random characteristics in thermal
- * equilibrium in beginning.
+ * @brief Mobile hole particle type initialised in thermal equilibrium.
  *
- * @tparam T Numeric Type
- * @tparam DeviceType Device Type
- * @param usePotentialForInit boolean that determines how the number of initial
- * particles is calculated (if true potential is used, else the amount of doping
- * is used for this)
+ * Symmetric counterpart to emcElectron: charge = +q, moved = true.
+ * Valence band structure is supplied via addValley() using any of the
+ * existing valley types with the appropriate hole effective mass.
+ *
+ * Initialisation density:
+ *  - usePotentialForInit = true  (device simulations):
+ *      p = ni * exp(-phi/Vt)  — inverse of electron response to potential
+ *  - usePotentialForInit = false (bulk / photo-excited simulations):
+ *      p = |doping|  — use |getDoping()| so both positive (photo-generated)
+ *                       and negative (acceptor) doping values give the
+ *                       correct hole count
+ *
+ * @tparam T          numeric type (float or double)
+ * @tparam DeviceType device type
  */
 template <class T, class DeviceType>
-struct emcElectron : public emcParticleType<T, DeviceType> {
+struct emcHole : public emcParticleType<T, DeviceType> {
   typedef typename DeviceType::ValueVec ValueVec;
   typedef typename DeviceType::SizeVec SizeVec;
 
@@ -27,19 +35,18 @@ struct emcElectron : public emcParticleType<T, DeviceType> {
   bool usePotentialForInit;
   T initEnergyEV; // > 0: fixed photoexcitation energy; 0: Maxwellian at device T
 
-  emcElectron(SizeType inHandlerNrEnergyLevels = 1000,
-              T inHandlerMaxEnergy = 4., bool inUsePotentialForInit = true,
-              T inInitEnergyEV = T(0))
+  emcHole(SizeType inHandlerNrEnergyLevels = 1000, T inHandlerMaxEnergy = 4.,
+          bool inUsePotentialForInit = false, T inInitEnergyEV = T(0))
       : emcParticleType<T, DeviceType>(inHandlerNrEnergyLevels,
                                        inHandlerMaxEnergy),
         usePotentialForInit(inUsePotentialForInit),
-        initEnergyEV(inInitEnergyEV) {};
+        initEnergyEV(inInitEnergyEV) {}
 
-  std::string getName() const { return "Electrons"; }
+  std::string getName() const { return "Holes"; }
 
   T getMass() const { return constants::me; }
 
-  T getCharge() const { return -constants::q; }
+  T getCharge() const { return +constants::q; }
 
   bool isMoved() const { return true; }
 
@@ -47,27 +54,29 @@ struct emcElectron : public emcParticleType<T, DeviceType> {
 
   T getInitialNrParticles(const SizeVec &coord, const DeviceType &device,
                           const emcGrid<T, Dim> &potential) {
-    T eDensity;
-    if (usePotentialForInit) // init nr particles based on potential
-      eDensity = std::exp(potential[coord]) * device.getMaterial().getNi();
-    else // init nr particles based on doping
-      eDensity = device.getDopingProfile().getDoping(coord);
+    T hDensity;
+    if (usePotentialForInit)
+      // potential is normalised by Vt; holes are anti-correlated with electrons
+      hDensity = std::exp(-potential[coord]) * device.getMaterial().getNi();
+    else
+      hDensity = std::fabs(device.getDopingProfile().getDoping(coord));
 
     for (SizeType idxDim = 0; idxDim < Dim; idxDim++) {
-      if (coord[idxDim] == 0 || coord[idxDim] == potential.getSize(idxDim) - 1)
-        eDensity *= 0.5;
+      if (coord[idxDim] == 0 ||
+          coord[idxDim] == potential.getSize(idxDim) - 1)
+        hDensity *= T(0.5);
     }
-    return eDensity * device.getCellVolume();
+    return hDensity * device.getCellVolume();
   }
 
   T getExpectedNrParticlesAtContact(const SizeVec &coord,
                                     const DeviceType &device) {
-    T expectedNrPart =
-        device.getCellVolume() * device.getDopingProfile().getDoping(coord);
+    T expectedNrPart = device.getCellVolume() *
+                       std::fabs(device.getDopingProfile().getDoping(coord));
     const auto &extent = device.getGridExtent();
     for (SizeType idxDim = 0; idxDim < Dim; idxDim++) {
       if (coord[idxDim] == 0 || coord[idxDim] == extent[idxDim] - 1)
-        expectedNrPart *= 0.5;
+        expectedNrPart *= T(0.5);
     }
     return expectedNrPart;
   }
@@ -92,16 +101,8 @@ struct emcElectron : public emcParticleType<T, DeviceType> {
   emcParticle<T> generateInjectedParticle(const SizeVec &coord,
                                           const DeviceType &device,
                                           emcRNG &rng) {
-    emcParticle<T> part;
-    part.region = device.getDopingProfile().getDopingRegionIdx(coord);
-    part.valley = std::floor(this->getNrValleys() * dist(rng));
-    auto valley = this->getValley(part.valley);
-    part.subValley = std::floor(valley->getDegeneracyFactor() * dist(rng));
-    initParticleKSpaceMaxwellian(part, coord, device, valley, rng);
-    part.tau = this->getNewTau(part.valley, part.region, rng);
-    part.grainTau = this->getNewGrainTau(rng);
-    return part;
+    return generateInitialParticle(coord, device, rng);
   }
 };
 
-#endif // EMC_ELECTRON_HPP
+#endif // EMC_HOLE_HPP

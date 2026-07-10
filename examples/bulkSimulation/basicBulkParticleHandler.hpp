@@ -88,8 +88,11 @@ public:
    * @param inFieldDirection the direction of the applied field
    * @param inFieldStrength field strength
    */
+  /// @param inSeed RNG seed; 0 (default) draws a seed from the wall clock.
+  ///        A non-zero value makes the run bit-reproducible.
   basicBulkParticleHandler(DeviceType &inDevice, MapIdxToParticleTypes &inTypes,
-                           const ValueVec &inFieldDirection, T inFieldStrength)
+                           const ValueVec &inFieldDirection, T inFieldStrength,
+                           long unsigned int inSeed = 0)
       : device(inDevice), idxTypeToPartType(inTypes),
         appliedFieldDir(inFieldDirection), particles(inTypes.size()),
         positionsParticles(inTypes.size()) {
@@ -104,8 +107,12 @@ public:
     }
 
     // seed random number generator(s)
-    rngs.emplace_back(emcRNG(static_cast<long unsigned int>(
-        std::chrono::high_resolution_clock::now().time_since_epoch().count())));
+    rngs.emplace_back(emcRNG(
+        inSeed != 0 ? inSeed
+                    : static_cast<long unsigned int>(
+                          std::chrono::high_resolution_clock::now()
+                              .time_since_epoch()
+                              .count())));
 #ifdef _OPENMP
     for (SizeType idxSeed = 1; idxSeed < omp_get_max_threads(); idxSeed++)
       rngs.emplace_back(emcRNG(rngs[0]()));
@@ -337,6 +344,160 @@ public:
                      });
     }
     return avgDriftVel;
+  }
+
+  /**
+   * @brief Apply binary carrier-carrier scattering to one particle type.
+   *
+   * Passes the internal particle vector directly to the scatter object so it
+   * can form random pairs and perform CM-frame elastic collisions without
+   * copying data.
+   *
+   * @param ccScatter  emcCarrierCarrierScatter instance (or any object with a
+   *                   scatter(vector<emcParticle<T>>&, T dt, emcRNG&) method)
+   * @param idxType    index of the particle type to scatter
+   * @param dt         time step [s]
+   */
+  template <class CCScatter>
+  void carrierCarrierScatter(CCScatter &ccScatter, SizeType idxType, T dt) {
+    ccScatter.scatter(particles[idxType], dt, rngs[0]);
+  }
+
+  /**
+   * @brief Apply one time step of inter-species (e-h) carrier-carrier scatter.
+   *
+   * @param ehScatter  scatter object with scatter(electrons, holes, dt, rng)
+   * @param idxTypeE   index of the electron particle type
+   * @param idxTypeH   index of the hole particle type
+   * @param dt         time step [s]
+   */
+  template <class EHScatter>
+  void interCarrierScatter(EHScatter &ehScatter, SizeType idxTypeE,
+                           SizeType idxTypeH, T dt) {
+    ehScatter.scatter(particles[idxTypeE], particles[idxTypeH], dt, rngs[0]);
+  }
+
+  /**
+   * @brief Apply one time step of band-to-band recombination (radiative +
+   *        Auger) across two carrier species.
+   *
+   * Delegates to Recomb::recombine(electrons, holes, posE, posH, dt, rng),
+   * which removes particle pairs and (for Auger) energizes a third carrier.
+   *
+   * @param recomb    recombination object (emcRecombination or compatible)
+   * @param idxTypeE  index of the electron particle type
+   * @param idxTypeH  index of the hole particle type
+   * @param dt        time step [s]
+   */
+  template <class Recomb>
+  void recombine(Recomb &recomb, SizeType idxTypeE, SizeType idxTypeH, T dt) {
+    recomb.recombine(particles[idxTypeE], particles[idxTypeH],
+                     positionsParticles[idxTypeE],
+                     positionsParticles[idxTypeH], dt, rngs[0]);
+  }
+
+  /**
+   * @brief Apply one time step of energy-selective contact extraction.
+   *
+   * Delegates to ESC::extract(particles, pos, dt, rng), which removes carriers
+   * with kinetic energy in the ESC window at rate 1/tau_ex.
+   *
+   * @param esc      ESC object (emcEnergySelectiveContact or compatible)
+   * @param idxType  index of the particle type to extract from
+   * @param dt       time step [s]
+   */
+  template <class ESC>
+  void extractCarriers(ESC &esc, SizeType idxType, T dt) {
+    esc.extract(particles[idxType], positionsParticles[idxType], dt, rngs[0]);
+  }
+
+  /**
+   * @brief Like moveParticles but enforces Pauli exclusion (Lugli-Ferry).
+   *
+   * Runs SEQUENTIALLY (no OpenMP) because the shared Pauli grid would
+   * create data races under parallel access.
+   *
+   * Algorithm per scatter event:
+   *   1. Save particle state (k, energy, valley) before calling scatterParticle.
+   *   2. If the particle's k-vector changed, check pauli.isBlocked(newK).
+   *   3. If blocked → restore state (treat as self-scatter); increment
+   *      pauli.nRejected.
+   *   4. If not blocked → call pauli.update(kOld, kNew); increment
+   *      pauli.nScattered.
+   *
+   * The Pauli grid must be built (pauli.buildGrid) BEFORE calling this
+   * method each timestep; the grid is kept live during the step so
+   * successive scatters within one step see up-to-date occupancies.
+   *
+   * @tparam Pauli  emcPauliExclusion<T> or compatible occupancy-grid type
+   * @param tStep   simulation time step [s]
+   * @param idxType index of the particle type to move
+   * @param pauli   Pauli exclusion grid (built externally; mutated in-place)
+   */
+  template <class Pauli>
+  void moveParticleTypeWithBandFilling(T tStep, SizeType idxType, Pauli &pauli) {
+    auto &type = idxTypeToPartType.at(idxType);
+    if (!type->isMoved())
+      return;
+
+    // Rebuild occupancy grid from current particle positions so the
+    // initial state for this timestep is consistent with any particles
+    // added, removed, or scattered by preceding steps (recombination, ESC).
+    pauli.buildGrid(particles[idxType]);
+    pauli.resetCounters();
+
+    auto force = scale(appliedField, type->getCharge());
+    auto &currRNG = rngs[0]; // sequential — single RNG
+
+    for (SizeType idxPart = 0; idxPart < getNrParticles(idxType); idxPart++) {
+      auto &particle = particles[idxType][idxPart];
+      auto &pos      = positionsParticles[idxType][idxPart];
+      auto  valley   = type->getValley(particle.valley);
+
+      driftParticle(std::min(particle.tau, tStep), particle, valley, pos, force);
+      T tRemaining = tStep - particle.tau;
+
+      while (tRemaining > 0) {
+        // Save state before scatter
+        auto kOld      = particle.k;
+        T    eOld      = particle.energy;
+        auto valleyOld = particle.valley;
+
+        type->scatterParticle(particle, currRNG);
+
+        // Check if k actually changed (scatterParticle may self-scatter)
+        bool kChanged = (particle.k[0] != kOld[0] ||
+                         particle.k[1] != kOld[1] ||
+                         particle.k[2] != kOld[2]);
+
+        if (kChanged) {
+          pauli.nScattered++;
+          if (pauli.isBlocked(particle.k)) {
+            // Reject scatter → restore pre-scatter state
+            particle.k      = kOld;
+            particle.energy = eOld;
+            particle.valley = valleyOld;
+            pauli.nRejected++;
+          } else {
+            pauli.update(kOld, particle.k);
+          }
+        }
+
+        T newTau = type->getNewTau(particle.valley, particle.region, currRNG);
+        particle.tau += newTau;
+        valley = type->getValley(particle.valley);
+        driftParticle(std::min(tRemaining, newTau), particle, valley, pos, force);
+        tRemaining -= newTau;
+      }
+      particle.tau -= tStep;
+
+      // Handle grain scattering (not Pauli-gated — grain boundary is classical)
+      particle.grainTau -= tStep;
+      if (particle.grainTau <= 0) {
+        type->scatterParticleAtGrain(particle, currRNG);
+        particle.grainTau = type->getNewGrainTau(currRNG);
+      }
+    }
   }
 
   //! Deletes all current particles.
