@@ -20,7 +20,7 @@ ViennaEMC is a header-only C++17 library for semiconductor carrier transport sim
    - [Single-layer MoS₂](#single-layer-mos)
    - [2D MOSFET](#2d-mosfet)
    - [2D Resistor](#2d-resistor)
-   - [Hot Carrier Cooling in Metal-Halide Perovskites (HPB)](#hot-carrier-cooling-in-metal-halide-perovskites-hpb)
+   - [Hot-Carrier Dynamics in Metal-Halide Perovskites](#hot-carrier-dynamics-in-metal-halide-perovskites)
 6. [Building and running tests](#building-and-running-tests)
 7. [Installing as a library](#installing-as-a-library)
 8. [Integrating into your own CMake project](#integrating-into-your-own-cmake-project)
@@ -42,7 +42,7 @@ ViennaEMC extends the classical EMC method with:
 - **Self-scattering (null-scattering)** — the standard technique that lets every particle share the same time step regardless of its local scatter rate.
 - **Particle–particle interactions via FMM** — long-range Coulomb forces between moving carriers and fixed donors, computed with [ScalFMM](https://gitlab.inria.fr/solverstack/ScalFMM).
 - **Poisson solver coupling** — for full device simulations (MOSFETs, resistors) the electrostatic potential is solved self-consistently on a grid.
-- **Hot Phonon Bottleneck (HPB)** — a dynamic phonon bath (`emcPhononBath`) tracks the out-of-equilibrium LO phonon occupation N_q per wave-vector bin. Fröhlich scatter rates are updated every time step to reflect the evolving phonon temperature. This models the hot-phonon effect in metal-halide perovskites (MHP) and other polar semiconductors.
+- **Hot-carrier dynamics in metal-halide perovskites** — a dynamic phonon bath (`emcPhononBath`) tracks the out-of-equilibrium LO phonon occupation N_q per wave-vector bin, coupled to an acoustic reservoir in a three-temperature carrier/LO/acoustic model. Fröhlich scatter rates are rebuilt every time step from the evolving occupation, capturing the hot-phonon bottleneck and the acoustic cascade. On top of this the `hotCarrierMHP` example builds a full **bipolar device model** — electrons and holes sharing the bath, carrier–carrier and electron–hole scattering, radiative and Auger recombination, Pauli band filling, and energy-selective extraction from which open-circuit voltage and power conversion efficiency are computed.
 
 ---
 
@@ -55,12 +55,21 @@ include/
 ├── emcDevice.hpp              — simulation domain (geometry, doping, temperature)
 ├── emcMaterial.hpp            — material constants (dielectric, mass density, …)
 ├── emcSimulation.hpp          — top-level device simulation loop
-├── emcPhononBath.hpp          — dynamic LO phonon bath (for Hot Phonon Bottleneck)
 ├── emcScatterHandler.hpp      — manages scatter table construction and selection
 ├── emcConstants.hpp           — physical constants (SI units)
+│                                # hot-carrier modules (examples/hotCarrierMHP)
+├── emcPhononBath.hpp          — three-temperature LO/acoustic phonon bath (HPB + acoustic cascade)
+├── emcCarrierCarrierScatter.hpp   — intra-species carrier–carrier scattering
+├── emcInterCarrierScatter.hpp     — electron–hole scattering (reduced-mass frame)
+├── emcRecombination.hpp       — radiative (Bnp) + Auger (CCCH/CHHS) recombination
+├── emcEnergySelectiveContact.hpp  — energy-selective carrier extraction
+├── emcPauliExclusion.hpp      — Lugli–Ferry band filling on a k-space occupancy grid
+├── emcHotCarrierOutput.hpp    — Fermi–Dirac fit → carrier temperature, V_OC, PCE
 ├── ParticleType/
 │   ├── emcParticleType.hpp    — base class; holds valleys + scatter mechanisms
-│   └── emcElectron.hpp        — concrete electron particle type
+│   ├── emcElectron.hpp        — concrete electron particle type
+│   ├── emcHole.hpp            — concrete hole particle type (bipolar transport)
+│   └── emcAcceptor.hpp        — acceptor particle type
 ├── ValleyTypes/
 │   ├── emcParabolicIsotropValley.hpp
 │   ├── emcNonParabolicIsotropValley.hpp
@@ -229,94 +238,91 @@ Simulates a uniformly doped silicon resistor in 2D. A simpler device than the MO
 
 ---
 
-### Hot Carrier Cooling in Metal-Halide Perovskites (HPB)
+### Hot-Carrier Dynamics in Metal-Halide Perovskites
 
 **Path:** `examples/hotCarrierMHP/`
 **Executable:** `build/examples/hotCarrierMHP/hotCarrierMHP`
 
-Simulates the cooling of photo-excited hot carriers in a bulk metal-halide perovskite (MHP) semiconductor, with and without the **Hot Phonon Bottleneck (HPB)** effect. This example implements the single-mode Fröhlich + phonon bath model of Lugli (1987), as applied to MHP in Faber, Filipovic, Koster, *J. Phys. Chem. Lett.* **2024**, 15, 12601.
+Simulates photo-excited hot-carrier cooling and device operation in a bulk metal-halide perovskite (MHP). It extends the single-carrier hot-phonon-bottleneck model of Faber, Filipovic, Koster, *J. Phys. Chem. Lett.* **2024**, 15, 12601 into a **bipolar, three-temperature device simulation**.
 
-#### Physics
+#### What it models
 
-When carriers relax they emit LO phonons (Fröhlich scattering). In the HPB regime the emission rate is so fast that the LO phonon population N_q rises well above its thermal equilibrium value N_0 (Bose–Einstein). The hot phonon bath in turn stimulates re-absorption, slowing further carrier cooling. ViennaEMC models this with:
+- **Hot-phonon bottleneck (HPB)** — carriers emit LO phonons (Fröhlich); the LO occupation N_q rises above its equilibrium value N_0 and stimulated re-absorption slows further cooling. `emcPhononBath` tracks N_q per wave-vector bin and updates it each step as
 
-1. **`emcPhononBath`** — tracks N_q in configurable wave-vector bins. After each time step it updates N_q according to:
+  ```
+  Nq[i] += (nEmitted[i] - nAbsorbed[i]) / Dph  -  (dt / tauLO) * (Nq[i] - Nstar)
+  ```
 
-   ```
-   Nq[i] += (nEmitted[i] - nAbsorbed[i]) / Dph  -  (dt / tauLO) * (Nq[i] - N0)
-   ```
+  where `Dph = q² dq Vsim / (2π²)` is the number of phonon modes in the bin and `tauLO` is the Klemens lifetime. The Fröhlich rates are rebuilt every step from the current N_q.
+- **Acoustic cascade** — a three-temperature carrier/LO/acoustic model in which the LO decay target `Nstar` follows a finite-lifetime acoustic reservoir (lifetime `tau_ac`) that the LO modes back-heat, so the bottleneck persists longer. An optional **Ridley** channel (LO → LA + TO) competes with Klemens decay.
+- **Bipolar transport** — electrons and holes share the phonon bath, with intra-species carrier–carrier and inter-species electron–hole scattering.
+- **Recombination** — radiative (Bnp) and Auger (CCCH/CHHS); Auger returns the gap energy to a surviving carrier (Auger reheating).
+- **Band filling** — Lugli–Ferry Pauli blocking on a k-space occupancy grid.
+- **Energy-selective contact (ESC)** — extraction through a window [E_ex ± ΔE/2], from which the working open-circuit voltage and PCE are computed.
 
-   where `Dph = q² dq Vsim / (2π²)` is the number of phonon modes in bin `i`, and `tauLO` is the Klemens phonon lifetime.
-
-2. **`emcHotPhononFroehlichAbsorption3D` / `emcHotPhononFroehlichEmission3D`** — Fröhlich scatter mechanisms that read N_q from the shared phonon bath instead of using the fixed N_0. After each scatter event the transferred wave vector |q| = |k_new − k_old| is recorded in the bath.
-
-3. **`reinitScatterTables()`** — called after each phonon bath update to rebuild the self-scattering table with the new N_q-dependent rates.
+Optionally, `--use_multimode 1` resolves the two IR-active MAPbI₃ LO branches instead of a single effective mode.
 
 #### Running the example
 
-The example contains a compile-time switch:
-
-```cpp
-static constexpr bool USE_HOT_PHONON = true;  // false = equilibrium phonons
-```
-
-To compare HPB vs. equilibrium, compile and run the executable twice, changing this flag:
+Every mechanism and material parameter is a command-line flag — there are no compile-time switches. Run from the build folder:
 
 ```bash
 cd build/examples/hotCarrierMHP
 
-# Run 1: HPB enabled (default)
+# Full default model (MAPbI3, all mechanisms on)
 ./hotCarrierMHP
-# Produces: avgEnergyHPB.txt, phononOccupationHPB.txt
 
-# Edit hotCarrierMHP.cpp: set USE_HOT_PHONON = false, then recompile
-cd /path/to/ViennaEMC
-# edit examples/hotCarrierMHP/hotCarrierMHP.cpp
-cd build && make hotCarrierMHP
+# Equilibrium-phonon reference (HPB off)
+./hotCarrierMHP --use_hot_phonon 0
 
-# Run 2: equilibrium phonons
-cd examples/hotCarrierMHP
-./hotCarrierMHP
-# Produces: avgEnergy.txt, phononOccupation.txt
+# CsSnI3 presets with a selective device contact
+./hotCarrierMHP --material sn --E_ex 0.2 --delta_E 0.05
+
+# Acoustic-lifetime study, reproducible, larger box for low shot noise
+./hotCarrierMHP --tau_ac 10e-12 --box 200e-9 --seed 1
 ```
 
-Each run takes approximately 5–15 minutes on a single core for 10 ps of simulation time with 1000 carriers.
+At the end of a run the console prints the working `V_OC`, extraction `yield`, and `PCE`. A default run (100 nm box, 10 ps) finishes in well under a minute; the larger boxes used for low-noise or band-filling runs take longer.
+
+#### Key command-line flags
+
+Defaults are for MAPbI₃; `--material sn` switches to CsSnI₃ presets. Times are in seconds, energies in eV, densities in m⁻³. Boolean flags take `0`/`1`.
+
+| Flag | Default (pb / sn) | Description |
+|---|---|---|
+| `--material` | `pb` | Presets: `pb` = MAPbI₃, `sn` = CsSnI₃ |
+| `--use_hot_phonon` | `1` | Hot-phonon bottleneck (dynamic N_q) |
+| `--use_acoustic` | `1` | Acoustic reservoir (three-temperature model) |
+| `--use_holes` | `1` | Bipolar transport (electrons + holes) |
+| `--use_recomb` | `1` | Radiative + Auger recombination |
+| `--use_cc` | `1` | Carrier–carrier scattering |
+| `--use_esc` | `1` | Energy-selective extraction |
+| `--use_bf` | `0` | Pauli band filling (selects the large box) |
+| `--use_multimode` | `0` | Two-branch (multi-mode) Fröhlich coupling |
+| `--ridley_w` | `0` | Ridley LO→LA+TO branching fraction (0–1) |
+| `--E_photon` | `3.1` | Pump photon energy |
+| `--E_ex` / `--delta_E` | `0.4` / `0.05` | ESC window centre / width |
+| `--density` | `1e24` | Carrier density (10²⁴ m⁻³ ≈ 10¹⁸ cm⁻³) |
+| `--tau_ac` | `30e-12` | Acoustic-reservoir lifetime |
+| `--tau_lo` | `2e-12` / `0.1e-12` | LO (Klemens) phonon lifetime |
+| `--box` | auto | Cubic box side [m]; `0` auto-selects (100 nm, or 464 nm with `--use_bf`) |
+| `--total_time` | `10e-12` | Simulation time |
+| `--seed` | `0` | RNG seed; `0` = wall-clock, nonzero = reproducible |
+
+Further overrides: `--eps_hi`, `--eps_lo`, `--mass_e`, `--mass_h`, `--omega_lo`, `--omega_to`, `--tau_to`, `--tau_ex`, `--E_gap`, `--T_lat`.
 
 #### Output files
 
-| File | Columns | Description |
+The driver writes five time series. Each filename carries a suffix encoding the enabled mechanisms — `HPB` or `EQ`, then `_AC` (acoustic), `_MM` (multi-mode), `_RID` (Ridley), `_BF` (band filling), `_1C` (single-carrier), `_ESC` (extraction). The full default model, for example, writes `carrierTempHPB_AC_ESC.txt`.
+
+| File (before suffix) | Columns | Description |
 |---|---|---|
-| `avgEnergyHPB.txt` | `t [s]   <E> [eV]` | Average carrier energy vs. time, HPB run |
-| `avgEnergy.txt` | `t [s]   <E> [eV]` | Average carrier energy vs. time, equilibrium run |
-| `phononOccupationHPB.txt` | `t [s]   N_q` | Mean phonon occupation vs. time, HPB run |
-| `phononOccupation.txt` | `t [s]   N_q` | Mean phonon occupation vs. time, equilibrium run (constant N_0) |
+| `avgEnergyElectrons` / `avgEnergyHoles` | `t   <E>[eV]` | Mean carrier energy vs time |
+| `phononOccupation` | `t   N_LO   [N_ac  T_ac]   [N_TO  T_TO]` | LO occupation, plus acoustic (and Ridley TO) reservoir when enabled |
+| `nrCarriers` | `t   N_e  N_h  N_esc_e  N_esc_h` | Surviving and extracted carrier counts |
+| `carrierTemp` | `t   T_MB_e  T_MB_h  T_FD_e  μ_e  T_FD_h  μ_h` | Maxwell–Boltzmann and Fermi–Dirac carrier temperatures / chemical potentials |
 
-#### Expected results
-
-With the default MAPbI₃-like parameters (m* = 0.2 mₑ, ε∞ = 10, εₛ = 30, ℏω₀ = 33 meV, τ_LO = 2 ps, n = 10²⁴ m⁻³, T_init ≈ 3000 K):
-
-- N_q rises from N_0 = 0.387 to a peak of ≈ 0.463 (+19 %) at t ≈ 1.2 ps, then decays on the τ_LO = 2 ps timescale.
-- During 0–2 ps, HPB and equilibrium carriers cool at similar rates (increased N_q raises both emission and absorption).
-- After t ≈ 3 ps, HPB carriers plateau at a **higher energy** than the equilibrium run: hot phonons near threshold (E ≈ ℏω₀ = 33 meV) continually re-excite carriers, setting a higher effective carrier temperature floor.
-
-#### Key parameters in `hotCarrierMHP.cpp`
-
-| Parameter | Default | Description |
-|---|---|---|
-| `USE_HOT_PHONON` | `true` | Enable/disable Hot Phonon Bottleneck |
-| `relEffMass` | 0.2 | Relative effective mass m*/mₑ |
-| `eps_hi` | 10 | Optical (high-frequency) relative permittivity ε∞ |
-| `eps_lo` | 30 | Static (low-frequency) relative permittivity εₛ |
-| `phononEnergy` | 0.033 eV | LO phonon energy ℏω₀ |
-| `tauLO` | 2×10⁻¹² s | LO phonon Klemens lifetime |
-| `latticeTempK` | 300 K | Lattice temperature |
-| `initCarrierTempK` | 3000 K | Initial hot carrier temperature |
-| `boxSide` | 100 nm | Cubic simulation box side length |
-| `carrierDensity` | 10²⁴ m⁻³ | Carrier density (≈ 10¹⁸ cm⁻³) |
-| `dt` | 5×10⁻¹⁵ s | EMC time step (5 fs) |
-| `totalTime` | 10×10⁻¹² s | Total simulation time (10 ps) |
-| `nrPhononBins` | 1 | Number of phonon wave-vector bins (1 = single-mode) |
-| `dq` | 2×10⁹ m⁻¹ | Bin width in wave-vector space |
+> **Reproducibility:** particle moves run over OpenMP threads, each with its own RNG stream, so the seed **and** the thread count together define a trajectory. Pin `OMP_NUM_THREADS` and pass a nonzero `--seed` for repeatable runs.
 
 ---
 
