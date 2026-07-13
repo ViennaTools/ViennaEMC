@@ -8,3 +8,13 @@ __pycache__/
 dependencies/
 doxygen_config.txt
 Papers/
+
+# MoS2 model work: local validation/demo artifacts (drivers, plots, figures, notes)
+validation/
+# runtime scatter-table dumps written to the working dir when a sim is run
+*ScatterMechanism.txt
+# example output files
+singleLayerMoS2*.txt
+# stand-alone proposal PDF (personal document)
+FWF_Stand_alone_proposal_2_0.pdf
+*model_plan.md
