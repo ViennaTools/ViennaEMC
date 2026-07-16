@@ -53,8 +53,34 @@ class emcSimulation {
   ParticleHandler particleHandler;
   emcSimulationResults<T, DeviceType> results;
 
+  // optional drift-velocity (Ramo) channel-current tally; off unless a region is
+  // set via setChannelCurrentRegion() -> existing behaviour is unchanged.
+  bool trackChannelCurrent = false;
+  T channelX0 = 0, channelX1 = 0, channelLength = 1;
+  T driftCurrentSum = 0;
+  SizeType driftCurrentCount = 0;
+  SizeType poissonInterval = 1; // solve Poisson every n-th step (frozen field)
+
 public:
   emcSimulation() = delete;
+
+  //! Enable a low-noise drift-velocity current tally over the transport slab
+  //! x in [x0, x1] (channelLength = the region length used for the Ramo sum).
+  void setChannelCurrentRegion(T x0, T x1, T length) {
+    channelX0 = x0;
+    channelX1 = x1;
+    channelLength = length;
+    trackChannelCurrent = true;
+  }
+  //! Time-averaged drift-velocity current [A] (over non-transient steps).
+  T getAvgDriftCurrent() const {
+    return driftCurrentCount ? driftCurrentSum / driftCurrentCount : 0;
+  }
+
+  //! Solve the (expensive) Poisson equation only every n-th step and reuse the
+  //! field in between (frozen-field sub-cycling). n=1 (default) = every step =
+  //! unchanged behaviour. Valid when the potential varies slowly (steady state).
+  void setPoissonInterval(SizeType n) { poissonInterval = n < 1 ? 1 : n; }
 
   emcSimulation(emcSimulationParameter<T, DeviceType> &inParam,
                 DeviceType &inDevice, PoissonSolver &inSolver,
@@ -87,7 +113,8 @@ public:
 
     std::cout << "Monte Carlo Procedure ..." << std::endl;
     for (SizeType nrStep = 0; nrStep < totalSteps; nrStep++) {
-      performEMCStep(resetBC, param.isTransientStep(nrStep));
+      bool solvePoisson = (nrStep % poissonInterval == 0);
+      performEMCStep(resetBC, param.isTransientStep(nrStep), solvePoisson);
       if (nrStep % param.nrStepsBetweenShowProgress == 0) {
         resetBC = false;
         showProgress(nrStep);
@@ -134,7 +161,8 @@ private:
    * @param isTransient boolean that determines if the current step is a
    * transient one.
    */
-  void performEMCStep(bool resetBC = true, bool isTransient = false) {
+  void performEMCStep(bool resetBC = true, bool isTransient = false,
+                      bool solvePoisson = true) {
     if (particleHandler.calcsPartPartInteraction()) {
       solver.calcBackgroundPotential(results.currPot, device, particleHandler,
                                      true);
@@ -142,20 +170,36 @@ private:
       auto nrRemPart =
           particleHandler.driftScatterParticles(param.stepTime, results.eField);
       auto nrInjPart = particleHandler.handleOhmicContacts();
-      if (!isTransient)
+      if (!isTransient) {
         results.updateCurrent(nrRemPart, nrInjPart);
+        accumulateDriftCurrent();
+      }
     } else {
-      solver.calcNonEquilibriumPotential(results.currPot, device,
-                                         results.currConc[0], resetBC);
-      pmScheme.calcEField(results.eField, results.currPot, device);
+      if (solvePoisson) { // frozen-field sub-cycling: reuse the field otherwise
+        solver.calcNonEquilibriumPotential(results.currPot, device,
+                                           results.currConc[0], resetBC);
+        pmScheme.calcEField(results.eField, results.currPot, device);
+      }
       auto nrRemPart =
           particleHandler.driftScatterParticles(param.stepTime, results.eField);
       auto nrInjPart = particleHandler.handleOhmicContacts();
       assignParticlesToGrid();
       results.updateCurrentParticleConcentrations(device);
-      if (!isTransient)
+      if (!isTransient) {
         results.updateCurrent(nrRemPart, nrInjPart);
+        accumulateDriftCurrent();
+      }
     }
+  }
+
+  /// accumulate the drift-velocity (Ramo) channel current, if enabled.
+  void accumulateDriftCurrent() {
+    if (!trackChannelCurrent)
+      return;
+    for (SizeType idxType = 0; idxType < param.particleTypes.size(); idxType++)
+      driftCurrentSum += particleHandler.getChannelDriftCurrent(
+          idxType, channelX0, channelX1, channelLength);
+    driftCurrentCount++;
   }
 
   /// calculate the carrier concentration from the simulated particles

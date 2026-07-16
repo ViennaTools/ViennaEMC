@@ -65,6 +65,24 @@ const NumType Iv1DefPotLA = 3.9;      // in eV
 const NumType Iv1DefPotTOGamma = 4.0; // in eV
 const NumType Iv1DefPotTO = 1.9;      // in eV
 
+// EFFECTIVE-parameter calibration factor for the intrinsic phonon deformation
+// potentials + Froehlich coupling (NOT the piezoelectric constant, which keeps
+// its DFT value e11). This is a PHENOMENOLOGICAL knob, not first-principles
+// physics: deformation-potential theory systematically OVERESTIMATES the
+// mobility because it omits quadrupole scattering and the full q-dependence of
+// the electron-phonon coupling matrix elements (for electrons, spin-orbit
+// coupling is minor, ~3 meV conduction splitting) -- none of which an analytic
+// DP model can represent explicitly. We therefore treat the deformation
+// potentials as EFFECTIVE parameters and scale them so the intrinsic
+// (unscreened, low-density) room-temperature electron mobility matches the
+// modern first-principles value (~136-167 cm2/Vs; Zhang & Liu 2022 quadrupole =
+// 136, dipole = 167; Li et al. LBTE ~150) instead of the ~410 cm2/Vs the bare
+// deformation potentials reproduce. Rate ~ DP^2, so mobility ~ 1/dpCalibration^2
+// (with a fixed piezoelectric floor). dpCalibration = 1.60 gives ~150 cm2/Vs;
+// dpCalibration = 1.0 recovers the original bare parameters. See the calibration
+// note for the full framing and its limitations.
+const NumType dpCalibration = 1.60;
+
 // used phonon energies in specific valleys
 // PAPER: https://journals.aps.org/prb/abstract/10.1103/PhysRevB.90.165436
 const NumType phononEnergyTA = 0.023;      // in eV
@@ -107,69 +125,80 @@ void addValleys(std::unique_ptr<DerivedParticleType> &particleType) {
 template <class DerivedParticleType>
 void addAcousticScatterMechanisms(
     std::unique_ptr<DerivedParticleType> &particleType,
-    const std::vector<int> &idxRegions, NumType temperature) {
+    const std::vector<int> &idxRegions, NumType temperature,
+    NumType dpCal = dpCalibration) {
   particleType->addScatterMechanism(
-      idxRegions, std::make_unique<acScatterMech>(0, AcDefPotTA, rho, vSoundTA,
-                                                  temperature, "TA"));
+      idxRegions, std::make_unique<acScatterMech>(
+                      0, dpCal * AcDefPotTA, rho, vSoundTA, temperature, "TA"));
 
   particleType->addScatterMechanism(
-      idxRegions, std::make_unique<acScatterMech>(0, AcDefPotLA, rho, vSoundLA,
-                                                  temperature, "LA"));
+      idxRegions, std::make_unique<acScatterMech>(
+                      0, dpCal * AcDefPotLA, rho, vSoundLA, temperature, "LA"));
 }
 
 template <class DerivedParticleType>
 void addZeroOrderIntervalleyScatterMechanisms(
     std::unique_ptr<DerivedParticleType> &particleType,
-    const std::vector<int> &idxRegions, NumType temperature) {
+    const std::vector<int> &idxRegions, NumType temperature,
+    NumType dpCal = dpCalibration) {
   particleType->addScatterMechanism(
-      idxRegions, std::make_unique<iv0EmScatterMech>(
-                      0, Iv0DefPotLO, rho, temperature, phononEnergyLOK, "LO"));
+      idxRegions, std::make_unique<iv0EmScatterMech>(0, dpCal * Iv0DefPotLO, rho,
+                                                     temperature, phononEnergyLOK,
+                                                     "LO"));
   particleType->addScatterMechanism(
-      idxRegions, std::make_unique<iv0AbScatterMech>(
-                      0, Iv0DefPotLO, rho, temperature, phononEnergyLOK, "LO"));
+      idxRegions, std::make_unique<iv0AbScatterMech>(0, dpCal * Iv0DefPotLO, rho,
+                                                     temperature, phononEnergyLOK,
+                                                     "LO"));
   particleType->addScatterMechanism(
-      idxRegions,
-      std::make_unique<iv0EmScatterMech>(0, Iv0DefPotHO, rho, temperature,
-                                         phononEnergyHP, "HomoPolar"));
+      idxRegions, std::make_unique<iv0EmScatterMech>(0, dpCal * Iv0DefPotHO, rho,
+                                                     temperature, phononEnergyHP,
+                                                     "HomoPolar"));
   particleType->addScatterMechanism(
-      idxRegions,
-      std::make_unique<iv0AbScatterMech>(0, Iv0DefPotHO, rho, temperature,
-                                         phononEnergyHP, "HomoPolar"));
+      idxRegions, std::make_unique<iv0AbScatterMech>(0, dpCal * Iv0DefPotHO, rho,
+                                                     temperature, phononEnergyHP,
+                                                     "HomoPolar"));
 }
 
 template <class DerivedParticleType>
 void addFirstOrderIntervalleyScatterMechanisms(
     std::unique_ptr<DerivedParticleType> &particleType,
-    const std::vector<int> &idxRegions, NumType temperature) {
+    const std::vector<int> &idxRegions, NumType temperature,
+    NumType dpCal = dpCalibration) {
   particleType->addScatterMechanism(
-      idxRegions, std::make_unique<iv1EmScatterMech>(
-                      0, Iv1DefPotTO, rho, temperature, phononEnergyTOK, "TO"));
+      idxRegions, std::make_unique<iv1EmScatterMech>(0, dpCal * Iv1DefPotTO, rho,
+                                                     temperature, phononEnergyTOK,
+                                                     "TO"));
   particleType->addScatterMechanism(
-      idxRegions, std::make_unique<iv1AbScatterMech>(
-                      0, Iv1DefPotTO, rho, temperature, phononEnergyTOK, "TO"));
-
-  particleType->addScatterMechanism(
-      idxRegions,
-      std::make_unique<iv1EmScatterMech>(0, Iv1DefPotTOGamma, rho, temperature,
-                                         phononEnergyTOGamma, "TOGamma"));
-  particleType->addScatterMechanism(
-      idxRegions,
-      std::make_unique<iv1AbScatterMech>(0, Iv1DefPotTOGamma, rho, temperature,
-                                         phononEnergyTOGamma, "TOGamma"));
+      idxRegions, std::make_unique<iv1AbScatterMech>(0, dpCal * Iv1DefPotTO, rho,
+                                                     temperature, phononEnergyTOK,
+                                                     "TO"));
 
   particleType->addScatterMechanism(
       idxRegions, std::make_unique<iv1EmScatterMech>(
-                      0, Iv1DefPotTA, rho, temperature, phononEnergyTA, "TA"));
+                      0, dpCal * Iv1DefPotTOGamma, rho, temperature,
+                      phononEnergyTOGamma, "TOGamma"));
   particleType->addScatterMechanism(
       idxRegions, std::make_unique<iv1AbScatterMech>(
-                      0, Iv1DefPotTA, rho, temperature, phononEnergyTA, "TA"));
+                      0, dpCal * Iv1DefPotTOGamma, rho, temperature,
+                      phononEnergyTOGamma, "TOGamma"));
 
   particleType->addScatterMechanism(
-      idxRegions, std::make_unique<iv1EmScatterMech>(
-                      0, Iv1DefPotLA, rho, temperature, phononEnergyLA, "LA"));
+      idxRegions, std::make_unique<iv1EmScatterMech>(0, dpCal * Iv1DefPotTA, rho,
+                                                     temperature, phononEnergyTA,
+                                                     "TA"));
   particleType->addScatterMechanism(
-      idxRegions, std::make_unique<iv1AbScatterMech>(
-                      0, Iv1DefPotLA, rho, temperature, phononEnergyLA, "LA"));
+      idxRegions, std::make_unique<iv1AbScatterMech>(0, dpCal * Iv1DefPotTA, rho,
+                                                     temperature, phononEnergyTA,
+                                                     "TA"));
+
+  particleType->addScatterMechanism(
+      idxRegions, std::make_unique<iv1EmScatterMech>(0, dpCal * Iv1DefPotLA, rho,
+                                                     temperature, phononEnergyLA,
+                                                     "LA"));
+  particleType->addScatterMechanism(
+      idxRegions, std::make_unique<iv1AbScatterMech>(0, dpCal * Iv1DefPotLA, rho,
+                                                     temperature, phononEnergyLA,
+                                                     "LA"));
 }
 
 /// Adds the polar-optical (Froehlich) scatter mechanisms. If carrierDensity > 0
@@ -183,22 +212,22 @@ template <class DerivedParticleType>
 void addFroehlichScatterMechanisms(
     std::unique_ptr<DerivedParticleType> &particleType,
     const std::vector<int> &idxRegions, NumType temperature,
-    NumType carrierDensity = 0, NumType envPermittivity = 1) {
+    NumType carrierDensity = 0, NumType envPermittivity = 1,
+    NumType dpCal = dpCalibration) {
   // K/K' conduction valleys with spin => degeneracy g = g_spin * g_valley = 4
   NumType screeningWavevector = twoDStaticScreeningWavevector<NumType>(
       carrierDensity, temperature, envPermittivity,
       relEffMassK * constants::me, 4);
+  NumType cc = dpCal * couplingConst; // effective (calibrated) polar coupling
 
   particleType->addScatterMechanism(
-      idxRegions, std::make_unique<froehlichAb>(0, phononEnergyLOGamma,
-                                                couplingConst, effectiveWidth,
-                                                temperature, "",
+      idxRegions, std::make_unique<froehlichAb>(0, phononEnergyLOGamma, cc,
+                                                effectiveWidth, temperature, "",
                                                 screeningWavevector));
 
   particleType->addScatterMechanism(
-      idxRegions, std::make_unique<froehlichEm>(0, phononEnergyLOGamma,
-                                                couplingConst, effectiveWidth,
-                                                temperature, "",
+      idxRegions, std::make_unique<froehlichEm>(0, phononEnergyLOGamma, cc,
+                                                effectiveWidth, temperature, "",
                                                 screeningWavevector));
 }
 

@@ -94,15 +94,28 @@ public:
   emcContactType getType() const { return emcContactType::GATE; }
 };
 
-/// Class for Schottky Contact (not implemented yet)
+/*! \brief Class for a Schottky Contact (metal / semiconductor).
+ *
+ * Models a metal contact (e.g. Ti/Au on 2D materials): carriers are injected
+ * from the metal reservoir over a Schottky barrier, so the reservoir density is
+ * set by the barrier height (NOT by a semiconductor doping). This lets an
+ * intrinsic/undoped channel be contacted the way real 2D-material FETs are.
+ *
+ * @param barrierHeight electron Schottky barrier metal->conduction band [V]
+ */
 template <class T> class emcSchottkyContact : public emcContact<T> {
+  T barrierHeight;
 
 public:
-  emcSchottkyContact(T inAppliedVoltage) : emcContact<T>(inAppliedVoltage) {}
+  emcSchottkyContact(T inAppliedVoltage, T inBarrierHeight)
+      : emcContact<T>(inAppliedVoltage), barrierHeight(inBarrierHeight) {}
 
+  /// returns the Schottky barrier height [V] (idxParameter 0)
   T getFurtherParameter(SizeType idxParameter) const {
+    if (idxParameter == 0)
+      return barrierHeight;
     emcMessage::getInstance()
-        .addError("Schottky Contact has no further parameter.")
+        .addError("Schottky Contact only has 1 further parameter.")
         .print();
     return 0;
   }

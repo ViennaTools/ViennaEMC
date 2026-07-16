@@ -201,9 +201,27 @@ public:
                        barrierHeight);
   }
 
-  // addSchottkyContact is not yet implemented.
-  // When added it will need barrier-height and ideality-factor parameters
-  // analogous to addGateContact, and a matching branch in the Poisson solvers.
+  /**
+   * @brief add a Schottky (metal) Contact.
+   *
+   * Injects carriers from the metal reservoir over a Schottky barrier, so the
+   * reservoir density is set by the barrier height instead of a semiconductor
+   * doping -- the way real 2D-material FETs (e.g. Ti/Au on MoS2) are contacted.
+   * Handled as a Dirichlet contact in the SOR Poisson solver.
+   *
+   * @param boundaryPos position of the boundary (enum emcBoundaryPos)
+   * @param voltage applied Voltage at contact [V]
+   * @param minPos position of minimal corner of the contact [m]
+   * @param maxPos position of maximal corner of the contact [m]
+   * @param barrierHeight electron Schottky barrier metal->conduction band [V]
+   */
+  void addSchottkyContact(emcBoundaryPos boundaryPos, T voltage,
+                          ValueVecSurface minPos, ValueVecSurface maxPos,
+                          T barrierHeight) {
+    surface.addContact(boundaryPos, emcContactType::SCHOTTKY, voltage,
+                       posToCoord(boundaryPos, minPos),
+                       posToCoord(boundaryPos, maxPos), 0, 0, barrierHeight);
+  }
 
   /// @brief helper function that tests if a position is out of bounds
   /// @param position position of interest

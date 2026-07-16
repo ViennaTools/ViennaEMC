@@ -216,7 +216,7 @@ public:
     case emcContactType::SCHOTTKY:
       updateAllOccurences(boundaryPos, minCoord, maxCoord, contacts.size());
       contacts.push_back(
-          std::make_unique<emcSchottkyContact<T>>(appliedVoltage));
+          std::make_unique<emcSchottkyContact<T>>(appliedVoltage, barrierHeight));
       break;
     }
   }
@@ -243,6 +243,22 @@ public:
       return isContactType(getCoordBoundary(coord, boundPos), boundPos,
                            emcContactType::OHMIC);
     return false;
+  }
+
+  /// @brief helper that checks if a given coord is at a Schottky contact
+  bool isSchottkyContact(const std::array<SizeType, DimDevice> &coord) const {
+    auto boundPos = getBoundaryPos(coord);
+    if (boundPos != emcBoundaryPos::INVALID)
+      return isContactType(getCoordBoundary(coord, boundPos), boundPos,
+                           emcContactType::SCHOTTKY);
+    return false;
+  }
+
+  /// @brief helper that checks if a coord is at a carrier-reservoir contact
+  /// (ohmic OR Schottky) -- both are Dirichlet contacts that inject/extract
+  /// carriers. For devices without Schottky contacts this equals isOhmicContact.
+  bool isReservoirContact(const std::array<SizeType, DimDevice> &coord) const {
+    return isOhmicContact(coord) || isSchottkyContact(coord);
   }
 
   /// @brief prints idxContactGrid (for debugging)
