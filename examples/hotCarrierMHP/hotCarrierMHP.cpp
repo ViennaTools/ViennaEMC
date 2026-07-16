@@ -138,21 +138,32 @@ int main(int argc, char *argv[]) {
   const std::array<NumType, 3> spacing = {boxSide/10, boxSide/10, boxSide/10};
 
   // ---- Material parameters (CLI-overridable) ---------------------------
-  // Defaults: MAPbI₃-like.  Pass --material sn for CsSnI₃ presets,
-  // or override individual params (--mass_e, --tau_lo, …) for sweeps.
-  const bool isSn = (getArg<std::string>(cli, "material", "pb") == "sn");
-  // Spectroscopic parameter sets (2026-07): MAPbI3 eps_inf 5.0 / eps_s 33.5
-  // (Sendner 2016), hw_LO 11.5 meV (Wright 2016, iodide Froehlich mode).
+  // Per-material spectroscopic presets (manuscript Table 1 lists the sources).
+  // Fields: eps_hi, eps_lo, m_e, m_h, hw_LO [eV], tau_LO [s], E_gap [eV].
+  //   pb      = MAPbI3   (Sendner2016 / Wright2016 / Umari2014)
+  //   sn      = CsSnI3   (Huang2013)
+  //   fapbi3  = FAPbI3   (Eperon2014 gap / NatCommun2018 LO / Galkowski2016 m*)
+  //   cspbi3  = CsPbI3   (gamma-phase; dielectric and LO are approximate)
+  //   cspbbr3 = CsPbBr3  (Iaru2021)
+  // Override any individual value with --eps_hi, --mass_e, --tau_lo, ... .
   // The generic "perovskite-like" trilogy set (10 / 30 / 33 meV) remains
   // reachable via --eps_hi 10 --eps_lo 30 --omega_lo 0.033 for SI runs.
-  const NumType eps_hi        = getArg(cli, "eps_hi",  isSn ? NumType(7)     : NumType(5.0));
-  const NumType eps_lo        = getArg(cli, "eps_lo",  isSn ? NumType(26)    : NumType(33.5));
-  const NumType relEffMassE   = getArg(cli, "mass_e",  isSn ? NumType(0.1)   : NumType(0.2));
-  const NumType relEffMassH   = getArg(cli, "mass_h",  isSn ? NumType(0.1)   : NumType(0.25));
-  const NumType phononEnergy  = getArg(cli, "omega_lo",isSn ? NumType(0.020) : NumType(0.0115)); // [eV]
-  const NumType tauLO         = getArg(cli, "tau_lo",  isSn ? NumType(0.1e-12) : NumType(2e-12)); // [s]
-  // CsSnI3: E_g ~ 1.3 eV; MAPbI3: E_g ~ 1.6 eV
-  const NumType E_gap         = getArg(cli, "E_gap",   isSn ? NumType(1.3) : NumType(1.6));   // [eV]
+  const std::string matName = getArg<std::string>(cli, "material", "pb");
+  struct MatPreset { NumType eps_hi, eps_lo, m_e, m_h, hw_lo, tau_lo, e_gap; };
+  MatPreset mp;
+  if      (matName == "sn")      mp = {NumType(7.0), NumType(26.0), NumType(0.10), NumType(0.10), NumType(0.0200), NumType(0.1e-12), NumType(1.30)};
+  else if (matName == "fapbi3")  mp = {NumType(5.0), NumType(30.0), NumType(0.17), NumType(0.17), NumType(0.0107), NumType(2.0e-12), NumType(1.48)};
+  else if (matName == "cspbi3")  mp = {NumType(5.0), NumType(18.0), NumType(0.20), NumType(0.25), NumType(0.0130), NumType(1.0e-12), NumType(1.70)};
+  else if (matName == "cspbbr3") mp = {NumType(4.5), NumType(16.0), NumType(0.20), NumType(0.20), NumType(0.0200), NumType(1.0e-12), NumType(2.30)};
+  else                            mp = {NumType(5.0), NumType(33.5), NumType(0.20), NumType(0.25), NumType(0.0115), NumType(2.0e-12), NumType(1.60)}; // pb (MAPbI3)
+
+  const NumType eps_hi        = getArg(cli, "eps_hi",  mp.eps_hi);
+  const NumType eps_lo        = getArg(cli, "eps_lo",  mp.eps_lo);
+  const NumType relEffMassE   = getArg(cli, "mass_e",  mp.m_e);
+  const NumType relEffMassH   = getArg(cli, "mass_h",  mp.m_h);
+  const NumType phononEnergy  = getArg(cli, "omega_lo",mp.hw_lo);  // [eV]
+  const NumType tauLO         = getArg(cli, "tau_lo",  mp.tau_lo); // [s]
+  const NumType E_gap         = getArg(cli, "E_gap",   mp.e_gap);  // [eV]
   const NumType latticeTempK  = getArg(cli, "T_lat",   NumType(300));   // [K]
   const NumType carrierDensity= getArg(cli, "density", NumType(1e24));  // [m^-3]
   const NumType E_photon      = getArg(cli, "E_photon",NumType(3.1));   // [eV]
@@ -233,10 +244,10 @@ int main(int argc, char *argv[]) {
 
   std::vector<NumType> modeEnergy, modeEpsLo;
   if (USE_MULTIMODE) {
-    if (isSn) {
+    if (matName != "pb") {
       std::cerr << "ERROR: --use_multimode uses the MAPbI3 two-mode "
                    "decomposition (Sendner 2016) and is not defined for "
-                   "CsSnI3. Aborting.\n";
+                   "other materials. Aborting.\n";
       return 1;
     }
     modeEnergy = {NumType(0.004959), NumType(0.016490)};  // [eV]
