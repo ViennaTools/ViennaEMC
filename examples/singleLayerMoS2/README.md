@@ -1,14 +1,13 @@
 # Single Layer MoS2 Simulation Example
 This example shows how to simulate a free-standing monolayer of molybdenum disulfide (ML-MoS2).
 
-The model of the material is based on different papers that can be found in the following:
+The material model draws on several papers:
 
 - [Phonon-limited mobility in n-type single-layer MoS2 from first principles - Kaasbjerg et al.](https://journals.aps.org/prb/abstract/10.1103/PhysRevB.85.115317)
 - [Intrinsic electrical transport properties of monolayer silicene and MoS2 from first principles - Li et al.](https://journals.aps.org/prb/abstract/10.1103/PhysRevB.87.115418)
 - [Semi-classical transport in MoS2 and MoS2 transistors by a Monte Carlo approach - Pilotto et al.](https://www.sciencedirect.com/science/article/abs/pii/S0038110122000673)
 
-It should be noted that this implementation is still in progress and only the results from the simulations with the parameters from the last listed paper (from Pilotto et al.)
-were compared to the results of the paper. 
+The model implements the full intrinsic and extrinsic scattering stack: deformation-potential acoustic and intervalley phonons, polar-optical (Fröhlich) and piezoelectric coupling, and free-carrier screening, plus, for supported devices, remote surface-optical substrate phonons and charged-impurity and surface-roughness scattering. Screened multivalley (K+Q) transport with per-valley Pauli exclusion is available. Three literature parameter sets are provided (Kaasbjerg, Li, and Pilotto), selectable via `selectedPaperForParameter`, each documented in its own `parameter*.hpp` file.
 
 The description of this example is organized as follows:
 
@@ -90,10 +89,10 @@ The driver [ambientMoS2.cpp](ambientMoS2.cpp) runs three sweeps and writes:
 - **ambientMoS2_humidity.txt**: relative humidity → effective permittivity and
   `μ/μ_dry` (the EDS mobility recovery).
 - **ambientMoS2_noise.txt**: `N_ads(t)` for a single site (RTN) and many sites
-  (1/f); analyse with `validation/plot_noise.py`.
+  (1/f).
 
-See `MoS2_ambient_note.md` in the repository root for the physics, the constants,
-and the experimental validation against the `someData/` MoS₂/HfO₂ measurements.
+The physics, the constants, and their sources are documented in
+[parameterAmbient.hpp](parameterAmbient.hpp).
 
 ## References
 The main references are the three listed papers from above, which are repeated here:

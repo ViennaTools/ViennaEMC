@@ -18,6 +18,8 @@ ViennaEMC is a header-only C++17 library for semiconductor carrier transport sim
    - [Bulk Silicon](#bulk-silicon)
    - [Bulk Silicon with FMM particle–particle interactions](#bulk-silicon-with-fmm-particleparticle-interactions)
    - [Single-layer MoS₂](#single-layer-mos)
+   - [Gated MoS₂ FET](#gated-mos-fet)
+   - [Ambient gas sensing in monolayer MoS₂](#ambient-gas-sensing-in-monolayer-mos)
    - [2D MOSFET](#2d-mosfet)
    - [2D Resistor](#2d-resistor)
    - [Hot-Carrier Dynamics in Metal-Halide Perovskites](#hot-carrier-dynamics-in-metal-halide-perovskites)
@@ -43,6 +45,7 @@ ViennaEMC extends the classical EMC method with:
 - **Particle–particle interactions via FMM** — long-range Coulomb forces between moving carriers and fixed donors, computed with [ScalFMM](https://gitlab.inria.fr/solverstack/ScalFMM).
 - **Poisson solver coupling** — for full device simulations (MOSFETs, resistors) the electrostatic potential is solved self-consistently on a grid.
 - **Hot-carrier dynamics in metal-halide perovskites** — a dynamic phonon bath (`emcPhononBath`) tracks the out-of-equilibrium LO phonon occupation N_q per wave-vector bin, coupled to an acoustic reservoir in a three-temperature carrier/LO/acoustic model. Fröhlich scatter rates are rebuilt every time step from the evolving occupation, capturing the hot-phonon bottleneck and the acoustic cascade. On top of this the `hotCarrierMHP` example builds a full **bipolar device model** — electrons and holes sharing the bath, carrier–carrier and electron–hole scattering, radiative and Auger recombination, Pauli band filling, and energy-selective extraction from which open-circuit voltage and power conversion efficiency are computed.
+- **Monolayer MoS₂ transport and gas sensing** — a first-principles-parameterised model for 2D transition-metal dichalcogenides, with the full intrinsic and extrinsic scattering stack (screened polar-optical and piezoelectric phonons, remote surface-optical substrate phonons, charged-impurity and surface-roughness scattering), screened multivalley (K+Q) transport with per-valley Pauli exclusion, a self-consistent gated-FET device, and an ambient/adsorbate extension for chemical sensing (charge-transfer doping, adsorbate Coulomb and 1/f noise, humidity screening).
 
 ---
 
@@ -65,6 +68,12 @@ include/
 ├── emcEnergySelectiveContact.hpp  — energy-selective carrier extraction
 ├── emcPauliExclusion.hpp      — Lugli–Ferry band filling on a k-space occupancy grid
 ├── emcHotCarrierOutput.hpp    — Fermi–Dirac fit → carrier temperature, V_OC, PCE
+│                                # monolayer-MoS₂ modules (examples/singleLayerMoS2, gatedMoS2FET)
+├── emcMultiValleyPauliExclusion.hpp — per-valley/subvalley band filling (K+Q)
+├── Ambient/
+│   ├── emcAdsorbateChargeTransfer.hpp — surface charge-transfer doping (donor/acceptor)
+│   ├── emcAdsorbateNoise.hpp          — adsorption/desorption KMC (1/f + RTN)
+│   └── emcHumidityDielectric.hpp      — humidity-dependent surface permittivity
 ├── ParticleType/
 │   ├── emcParticleType.hpp    — base class; holds valleys + scatter mechanisms
 │   ├── emcElectron.hpp        — concrete electron particle type
@@ -83,7 +92,14 @@ include/
     ├── emcZeroOrderInterValleyScatterMechanism.hpp
     ├── emcFirstOrderInterValleyScatterMechanism.hpp
     ├── emcCoulombScatterMechanism.hpp
-    └── …SingleLayer variants
+    │                                        # 2D-material (MoS₂) mechanisms
+    ├── emcFroehlichInteractionSingleLayer.hpp      — 2D polar-optical (Fröhlich)
+    ├── emcScreenedIntravalleyOpticalMechanism.hpp  — screened intravalley optical
+    ├── emcPiezoelectricSingleLayerScatterMechanism.hpp — piezoelectric acoustic
+    ├── emcRemoteSurfaceOpticalPhononMechanism.hpp  — remote substrate SO phonons
+    ├── emc2DChargedImpurityScatterMechanism.hpp    — charged-impurity sheet
+    ├── emcSurfaceRoughnessScatterMechanism.hpp     — interface roughness
+    └── emc2DScreening.hpp                          — free-carrier static screening
 ```
 
 The `examples/` directory contains standalone programs that use the library. Each example has its own `CMakeLists.txt` and can be studied as a template for new simulations.
@@ -206,11 +222,38 @@ Same as the bulk silicon example but adds real-space Coulomb forces between elec
 **Path:** `examples/singleLayerMoS2/`
 **Executable:** `build/examples/singleLayerMoS2/singleLayerMoS2`
 
-Simulates 2D electron transport in a monolayer of MoS₂. The simulation is 2D: valleys and scatter mechanisms use the `SingleLayer` variants in `include/`. Scatter mechanisms: acoustic and optical phonons (2D Fröhlich interactions available).
+Simulates 2D electron transport in a monolayer of MoS₂ (a transition-metal dichalcogenide). Valleys and scatter mechanisms use the `SingleLayer` and 2D variants in `include/`. The scattering stack covers deformation-potential acoustic and intervalley phonons, polar-optical (Fröhlich) and piezoelectric coupling, and free-carrier screening, plus, for supported devices, remote surface-optical substrate phonons and charged-impurity and surface-roughness scattering. Screened multivalley (K+Q) transport with per-valley Pauli exclusion is supported. Parameter sets from Kaasbjerg, Li, and Pilotto are provided (see the example's `README.md`).
 
 **What you can study:**
-- 2D drift velocity vs. field
-- Effects of different valley parameterisations (several literature models are available via a compile-time flag)
+- 2D drift velocity vs. field, per valley
+- Phonon-limited and substrate-limited mobility and its temperature dependence
+- The effect of different literature parameterisations and scatter mechanisms
+
+---
+
+### Gated MoS₂ FET
+
+**Path:** `examples/gatedMoS2FET/`
+**Executable:** `build/examples/gatedMoS2FET/gatedMoS2FET`
+
+Self-consistent (EMC + Poisson) simulation of a back-gated monolayer-MoS₂ field-effect transistor in 3D: `x` is the transport direction (source to drain), `y` the width, and `z` the gate axis. The monolayer sits in one `z`-layer (`electron2DDevice`), the gate with its HfO₂ oxide is at the bottom, and the source and drain are n+ ohmic contacts. Metal (Schottky) and carrier-reservoir contacts are available for contacting an undoped channel the way real 2D-material FETs are.
+
+**What you can study:**
+- Transfer characteristics (drain current vs. gate voltage)
+- Channel carrier-density and potential profiles under gate control
+
+---
+
+### Ambient gas sensing in monolayer MoS₂
+
+**Path:** `examples/singleLayerMoS2/ambientMoS2.cpp`
+**Executable:** `build/examples/singleLayerMoS2/ambientMoS2`
+
+Runs the ambient/adsorbate extension for monolayer MoS₂ used for chemical sensing. Three demonstrations go through the same adsorbate model: an O₂ partial-pressure sweep giving the conductivity response σ(P)/σ₀ (charge-transfer depletion plus adsorbate Coulomb scattering), a relative-humidity sweep giving μ(RH) (dielectric screening), and an adsorption/desorption noise series N_ads(t) (1/f and random-telegraph noise). Mobility is obtained from a short low-field EMC drift-velocity run, and σ = n e μ.
+
+**What you can study:**
+- Gas-sensing transduction: conductivity and mobility response to O₂, humidity, and adsorbate coverage (donors such as NH₃ vs. acceptors such as NO₂)
+- Low-frequency noise from dynamic adsorption and desorption
 
 ---
 
