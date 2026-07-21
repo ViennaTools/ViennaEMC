@@ -169,7 +169,7 @@ public:
           // count particles at each contact + delete excess particles
           auto &posPart = positionsParticles[idxType][idxPart];
           coord = Base::device.posToCoord(posPart);
-          if (surface.isOhmicContact(coord)) {
+          if (surface.isReservoirContact(coord)) {
             if (nrPart[coord] < Base::expNrPart[idxType][coord]) {
               nrPart[coord] += Base::nrCarriersPerPart;
             } else {
@@ -213,6 +213,27 @@ public:
       }
       os.close();
     }
+  }
+
+  //! \brief Drift-velocity (Ramo) current in the +x transport direction.
+  //!
+  //! I = q * (carriers/particle) * (1/L) * sum_i v_{x,i}, summed over carriers of
+  //! type idxType located in the transport slab x in [x0, x1]. Because it uses
+  //! every carrier in the slab each step, it is far less noisy than the contact-
+  //! flux current. Returns 0 if no carriers are in the slab.
+  T getChannelDriftCurrent(SizeType idxType, T x0, T x1, T channelLength) const {
+    const auto &partType = Base::idxTypeToPartType.at(idxType);
+    T sumVx = 0;
+    for (SizeType i = 0; i < getNrParticles(idxType); ++i) {
+      const auto &pos = positionsParticles[idxType][i];
+      if (pos[0] < x0 || pos[0] > x1)
+        continue;
+      const auto &part = particles[idxType][i];
+      auto vel = partType->getValley(part.valley)
+                     ->getVelocity(part.k, part.energy, part.subValley);
+      sumVx += vel[0];
+    }
+    return constants::q * Base::nrCarriersPerPart * sumVx / channelLength;
   }
 
 private:

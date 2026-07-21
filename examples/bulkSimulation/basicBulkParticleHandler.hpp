@@ -500,6 +500,80 @@ public:
     }
   }
 
+  /**
+   * @brief Like moveParticleTypeWithBandFilling but for a MULTIVALLEY model,
+   * using a per-valley/per-subvalley Pauli grid (emcMultiValleyPauliExclusion).
+   *
+   * The Pauli check/update are keyed by (valley, subValley, k) so that band
+   * filling is applied within each valley's own Fermi sea (the analytic model
+   * measures k from each valley's minimum). Runs SEQUENTIALLY.
+   *
+   * @tparam Pauli emcMultiValleyPauliExclusion<T> or compatible
+   */
+  template <class Pauli>
+  void moveParticleTypeWithMultiValleyBandFilling(T tStep, SizeType idxType,
+                                                  Pauli &pauli) {
+    auto &type = idxTypeToPartType.at(idxType);
+    if (!type->isMoved())
+      return;
+
+    pauli.buildGrid(particles[idxType]);
+    pauli.resetCounters();
+
+    auto force = scale(appliedField, type->getCharge());
+    auto &currRNG = rngs[0];
+
+    for (SizeType idxPart = 0; idxPart < getNrParticles(idxType); idxPart++) {
+      auto &particle = particles[idxType][idxPart];
+      auto &pos = positionsParticles[idxType][idxPart];
+      auto valley = type->getValley(particle.valley);
+
+      driftParticle(std::min(particle.tau, tStep), particle, valley, pos, force);
+      T tRemaining = tStep - particle.tau;
+
+      while (tRemaining > 0) {
+        auto kOld = particle.k;
+        T eOld = particle.energy;
+        auto valleyOld = particle.valley;
+        auto subOld = particle.subValley;
+
+        type->scatterParticle(particle, currRNG);
+
+        bool kChanged =
+            (particle.k[0] != kOld[0] || particle.k[1] != kOld[1] ||
+             particle.k[2] != kOld[2]);
+
+        if (kChanged) {
+          pauli.nScattered++;
+          if (pauli.isBlocked(particle.valley, particle.subValley, particle.k)) {
+            // reject -> restore pre-scatter state (self-scatter)
+            particle.k = kOld;
+            particle.energy = eOld;
+            particle.valley = valleyOld;
+            particle.subValley = subOld;
+            pauli.nRejected++;
+          } else {
+            pauli.update(valleyOld, subOld, kOld, particle.valley,
+                         particle.subValley, particle.k);
+          }
+        }
+
+        T newTau = type->getNewTau(particle.valley, particle.region, currRNG);
+        particle.tau += newTau;
+        valley = type->getValley(particle.valley);
+        driftParticle(std::min(tRemaining, newTau), particle, valley, pos, force);
+        tRemaining -= newTau;
+      }
+      particle.tau -= tStep;
+
+      particle.grainTau -= tStep;
+      if (particle.grainTau <= 0) {
+        type->scatterParticleAtGrain(particle, currRNG);
+        particle.grainTau = type->getNewGrainTau(currRNG);
+      }
+    }
+  }
+
   //! Deletes all current particles.
   void deleteParticles() {
     for (const auto &[idxType, _] : idxTypeToPartType) {

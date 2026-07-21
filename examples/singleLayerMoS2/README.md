@@ -64,6 +64,37 @@ The results are stored in multiple files:
 
 The file [plotSingleLayerMoS2Results.py](plotSingleLayerMoS2Results.py) shows how these resulting files can be plotted. For the usage of this file `emcPlottingFiles` has to be installed, as is described [here](../../README.md). Additionally, the file [calcMobilityFromVACF.py](calcMobilityFromVACF.py) can be used to calculate the mobility from the **prefix + velocityAtDifferentTimes (+ parameter).txt**-file.
 
+## Ambient / Adsorbate Model (`ambientMoS2`)
+
+A second executable in this folder, `ambientMoS2`, extends the transport model to
+*ambient-dependent* conductivity — how gas adsorption changes the DC conductivity
+and the noise. The model is defined in [parameterAmbient.hpp](parameterAmbient.hpp)
+(`namespace MoS2Ambient`, the analogue of the `parameter*.hpp` files above), built
+on the calibrated Kaasbjerg base and the reusable kernels in `include/Ambient/`.
+Four channels, all driven by a Langmuir surface coverage:
+
+- **C1 charge-transfer doping** — adsorbates donate/accept electrons, changing the
+  carrier density `n(P)`.
+- **C2 adsorbate Coulomb scattering** — the charged adsorbates act as 2D Coulomb
+  centres, reducing the mobility `μ(P)` (reuses the charged-impurity mechanism).
+- **C3 humidity dielectric screening** — adsorbed water raises the environment
+  permittivity, screening fixed charges and recovering `μ(RH)`.
+- **C4 adsorption/desorption noise** — a kinetic Monte Carlo of the site occupation
+  gives the conductivity-noise time series (RTN for one site; 1/f for many).
+
+The driver [ambientMoS2.cpp](ambientMoS2.cpp) runs three sweeps and writes:
+
+- **ambientMoS2_O2sweep.txt**: O₂ partial pressure → coverage, `n`, `N_ads`, `μ`,
+  and `σ/σ₀` (the air-vs-inert effect; reproduces the measured air/N₂ ratio at
+  half-coverage).
+- **ambientMoS2_humidity.txt**: relative humidity → effective permittivity and
+  `μ/μ_dry` (the EDS mobility recovery).
+- **ambientMoS2_noise.txt**: `N_ads(t)` for a single site (RTN) and many sites
+  (1/f); analyse with `validation/plot_noise.py`.
+
+See `MoS2_ambient_note.md` in the repository root for the physics, the constants,
+and the experimental validation against the `someData/` MoS₂/HfO₂ measurements.
+
 ## References
 The main references are the three listed papers from above, which are repeated here:
 - [Phonon-limited mobility in n-type single-layer MoS2 from first principles - Kaasbjerg et al.](https://journals.aps.org/prb/abstract/10.1103/PhysRevB.85.115317)

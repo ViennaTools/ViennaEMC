@@ -85,6 +85,8 @@ void setKaasbjergParameter(std::unique_ptr<DerivedParticleType> &particleType) {
   MoS2Kaasbjerg::addFirstOrderIntervalleyScatterMechanisms(particleType, {0},
                                                            temperature);
   MoS2Kaasbjerg::addFroehlichScatterMechanisms(particleType, {0}, temperature);
+  MoS2Kaasbjerg::addPiezoelectricScatterMechanisms(particleType, {0},
+                                                   temperature);
 }
 
 template <class DerivedParticleType>

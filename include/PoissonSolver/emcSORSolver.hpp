@@ -35,6 +35,16 @@ public:
     initDeviceCharacteristics();
   }
 
+  //! Degeneracy parameter beta for a 2D Fermi-Dirac electron statistics
+  //! (quantum capacitance). beta = 0 (default) -> classical Boltzmann n=exp(phi),
+  //! byte-identical to the original solver, so every non-2D-material model keeps
+  //! its exact behaviour. beta > 0 replaces the equilibrium electron density with
+  //! the degenerate 2D form  n(phi) = (1/beta)*ln(1 + beta*exp(phi))  (normalized
+  //! by Ni), whose derivative saturates to 1/beta -> the quantum capacitance. Set
+  //! it from the 2D density of states:  beta = Ni*tMono / N2D,  N2D = g*m*kT/(2 pi
+  //! hbar^2). Only the 2D-material FET device enables this.
+  void setDegeneracyBeta(T beta) { degeneracyBeta = beta; }
+
   /// calculates equilibrium potential
   void calcEquilibriumPotential(GridType &pot, const DeviceType & /*device*/,
                                 bool resetBC = true) {
@@ -49,7 +59,11 @@ public:
            surface.advanceCoord(boundPos, coordSurf)) {
         if (surface.isContactType(coordSurf, boundPos, emcContactType::OHMIC)) {
           coord = surface.getCoordDevice(coordSurf, boundPos);
-          pot[coord] = std::asinh(0.5 * doping[coord]);
+          pot[coord] = builtInPotential(doping[coord]);
+        } else if (surface.isContactType(coordSurf, boundPos,
+                                         emcContactType::SCHOTTKY)) {
+          coord = surface.getCoordDevice(coordSurf, boundPos);
+          pot[coord] = schottkyBuiltInPotential(coordSurf, boundPos);
         }
       }
     }
@@ -60,16 +74,26 @@ public:
       error = 0;
       coord.fill(0);
       for (auto &currPot : pot) {
-        // skip if point is at ohmic contacts
-        if (surface.isOhmicContact(coord)) {
+        // skip if point is at a reservoir (ohmic/Schottky) contact (Dirichlet)
+        if (surface.isReservoirContact(coord)) {
           pot.advanceCoord(coord);
           continue;
         }
 
-        n = std::exp(currPot);
-        p = 1. / n;
-        nominator = hProduct * (p - n + doping[coord] + currPot * (p + n));
-        denominator = 2 * hFactorSum + hProduct * (n + p);
+        if (degeneracyBeta <= 0) { // classical Boltzmann (original, byte-identical)
+          n = std::exp(currPot);
+          p = 1. / n;
+          nominator = hProduct * (p - n + doping[coord] + currPot * (p + n));
+          denominator = 2 * hFactorSum + hProduct * (n + p);
+        } else { // degenerate 2D Fermi-Dirac -> quantum capacitance
+          T e = std::exp(currPot);
+          n = std::log1p(degeneracyBeta * e) / degeneracyBeta;
+          T nPrime = e / (1 + degeneracyBeta * e); // dn/dphi (saturates -> C_q)
+          p = std::exp(-currPot);
+          nominator =
+              hProduct * (p - n + doping[coord] + currPot * (p + nPrime));
+          denominator = 2 * hFactorSum + hProduct * (p + nPrime);
+        }
         for (SizeType idxDim = 0; idxDim < Dim; idxDim++) {
           if (coord[idxDim] != 0)
             nominator += pot.getPrevValue(coord, idxDim) * hFactor[idxDim];
@@ -89,6 +113,12 @@ public:
 
         // update potential + store max. change of potential
         deltaPot = omega * (nominator / denominator - currPot);
+        // Weakly-screened nonlinear Poisson (e.g. an intrinsic 2D channel) can
+        // overshoot through the exp() and limit-cycle; clamp the step to keep the
+        // update stable. Only for the degenerate branch (beta>0); beta=0 models
+        // keep the exact original update (byte-identical).
+        if (degeneracyBeta > 0)
+          deltaPot = std::max(-potStepClamp, std::min(potStepClamp, deltaPot));
         currPot += deltaPot;
         if (std::abs(deltaPot) > error)
           error = std::abs(deltaPot);
@@ -112,7 +142,12 @@ public:
         if (surface.isContactType(coordSurf, boundPos, emcContactType::OHMIC)) {
           coord = surface.getCoordDevice(coordSurf, boundPos);
           pot[coord] = surface.getContactVoltage(coordSurf, boundPos, true) +
-                       std::asinh(0.5 * doping[coord]);
+                       builtInPotential(doping[coord]);
+        } else if (surface.isContactType(coordSurf, boundPos,
+                                         emcContactType::SCHOTTKY)) {
+          coord = surface.getCoordDevice(coordSurf, boundPos);
+          pot[coord] = surface.getContactVoltage(coordSurf, boundPos, true) +
+                       schottkyBuiltInPotential(coordSurf, boundPos);
         }
       }
     }
@@ -123,8 +158,8 @@ public:
       error = 0;
       coord.fill(0);
       for (auto &currPot : pot) {
-        // skip if point is at ohmic contacts
-        if (surface.isOhmicContact(coord)) {
+        // skip if point is at a reservoir (ohmic/Schottky) contact (Dirichlet)
+        if (surface.isReservoirContact(coord)) {
           pot.advanceCoord(coord);
           continue;
         }
@@ -148,8 +183,11 @@ public:
           }
         }
 
-        // update potential
+        // update potential (clamp the step for the degenerate branch to keep the
+        // weakly-screened nonlinear update stable; beta=0 stays byte-identical)
         deltaPot = omega * (nominator / denominator - currPot);
+        if (degeneracyBeta > 0)
+          deltaPot = std::max(-potStepClamp, std::min(potStepClamp, deltaPot));
         currPot += deltaPot;
         if (std::abs(deltaPot) > error)
           error = std::abs(deltaPot);
@@ -243,6 +281,37 @@ public:
   }
 
 private:
+  //! Ohmic-contact built-in potential from charge neutrality n(phi_bi)-p=doping.
+  //! beta<=0 (or p-type): original asinh(0.5*doping). beta>0 and n-type: invert
+  //! the degenerate 2D density  n_FD(phi)=doping (holes negligible in n+):
+  //!   phi_bi = ln( (exp(beta*doping)-1) / beta ).
+  inline T builtInPotential(T dopingNorm) const {
+    if (degeneracyBeta <= 0 || dopingNorm <= 0)
+      return std::asinh(0.5 * dopingNorm);
+    return std::log(std::expm1(degeneracyBeta * dopingNorm) / degeneracyBeta);
+  }
+
+  //! Schottky-contact reservoir potential phi_sb in the normalized frame
+  //! (n = Ni*exp(phi)): the metal fixes the reservoir electron density to
+  //! n_res = N_c*exp(-phiB/kT), with the effective DOS N_c = Ni/beta (2D DOS),
+  //! so phi_sb = ln(n_res/Ni) = -ln(beta) - phiB/Vth. Requires the degenerate
+  //! DOS reference (degeneracyBeta > 0), which the 2D-material device sets.
+  T schottkyBuiltInPotential(const SizeVecSurface &coordSurf,
+                             emcBoundaryPos boundPos) const {
+    if (degeneracyBeta <= 0)
+      emcMessage::getInstance()
+          .addError("Schottky contact requires setDegeneracyBeta(beta>0) "
+                    "(the metal-reservoir DOS reference).")
+          .print();
+    T barrier = surface.getContactFurtherParameter(coordSurf, boundPos, 0);
+    return -std::log(degeneracyBeta) - device.normalizeVoltage(barrier);
+  }
+
+  T degeneracyBeta = 0; //!< 2D Fermi-Dirac degeneracy param (0 = Boltzmann)
+  T potStepClamp = 2.0; //!< max |potential update| per SOR sweep [thermal V]
+                        //!< (only applied for degeneracyBeta > 0; stabilizes the
+                        //!< weakly-screened nonlinear Poisson of an intrinsic 2D
+                        //!< channel). Does not change the converged solution.
   T accuracy; //!< accuracy used for stopping criterion
   T omega;    //!< parameter of SOR-Solver
 

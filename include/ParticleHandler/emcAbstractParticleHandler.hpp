@@ -203,7 +203,7 @@ protected:
     auto &surface = device.getSurface();
     std::vector<int> nrInjPart(surface.getNrContacts(), 0);
     for (coord.fill(0); !nrPart.isEndCoord(coord); nrPart.advanceCoord(coord)) {
-      if (surface.isOhmicContact(coord)) {
+      if (surface.isReservoirContact(coord)) {
         T nrDiffEl = expNrPart[idxType][coord] - nrPart[coord];
         while (nrDiffEl > 0) {
           addParticle(idxType, coord, rngs[0], false);
@@ -267,7 +267,9 @@ private:
       if (type.second->isInjected()) {
         SizeVec coord;
         for (coord.fill(0); !tmp.isEndCoord(coord); tmp.advanceCoord(coord)) {
-          if (device.getSurface().isOhmicContact(coord))
+          // ohmic + Schottky are both reservoir contacts; the particle type
+          // returns the doping- (ohmic) or barrier- (Schottky) set density.
+          if (device.getSurface().isReservoirContact(coord))
             expNrPart[type.first][coord] =
                 type.second->getExpectedNrParticlesAtContact(coord, device);
         }

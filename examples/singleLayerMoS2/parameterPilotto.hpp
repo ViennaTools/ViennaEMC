@@ -1,4 +1,5 @@
 #include <ScatterMechanisms/emcAcousticSingleLayerScatterMechanism.hpp>
+#include <ScatterMechanisms/emcScreenedIntravalleyOpticalMechanism.hpp>
 #include <ScatterMechanisms/emcZeroOrderSingleLayerInterValleyScatterMechanism.hpp>
 #include <ValleyTypes/emcNonParabolicAnisotropSingleLayerValley.hpp>
 #include <ValleyTypes/emcNonParabolicIsotropSingleLayerValley.hpp>
@@ -30,6 +31,10 @@ using iv0AbScatterMech =
     emcZeroOrderSingleLayerInterValleyAbsorptionScatterMechanism<NumType>;
 using iv0EmScatterMech =
     emcZeroOrderSingleLayerInterValleyEmissionScatterMechanism<NumType>;
+using screenedOptical = emcScreenedIntravalleyOpticalMechanism<NumType>;
+
+// K-valley relative effective mass (used for the free-carrier screening DOS)
+const NumType relEffMassK = 0.47;
 
 const NumType rho = 3.1e-6;    // in kg / m2
 const NumType energyQK = 0.16; // in eV
@@ -100,15 +105,36 @@ void helperAddZeroOrderMech(std::unique_ptr<DerivedParticleType> &particleType,
       idxRegions, std::make_unique<iv0EmScatterMech>(param...));
 }
 
+/// Adds the zero-order intervalley/intravalley optical scattering. If
+/// carrierDensity > 0, the small-q intravalley polar-optical term (K -> K,
+/// Gamma phonons) is replaced by its free-carrier-SCREENED counterpart (see
+/// emcScreenedIntravalleyOpticalMechanism); the large-q intervalley terms are
+/// left unscreened (eps(q) -> 1 at large q). carrierDensity = 0 (default)
+/// reproduces the original unscreened Pilotto model exactly.
 template <class DerivedParticleType>
 void addZeroOrderIntervalleyScatterMechanisms(
     std::unique_ptr<DerivedParticleType> &particleType,
-    const std::vector<int> &idxRegions, NumType temperature) {
+    const std::vector<int> &idxRegions, NumType temperature,
+    NumType carrierDensity = 0, NumType envPermittivity = 1) {
 
-  // K -> K (Gamma - phonons)
-  helperAddZeroOrderMech(particleType, idxRegions, 0, 0, 5.8e10, rho,
-                         temperature, opPhonEnergyGamma, toSameSub,
-                         "KOpGammaToK");
+  // K -> K (Gamma - phonons): the polar-optical intravalley term.
+  if (carrierDensity > 0) {
+    NumType qs = twoDStaticScreeningWavevector<NumType>(
+        carrierDensity, temperature, envPermittivity,
+        relEffMassK * constants::me, 4);
+    particleType->addScatterMechanism(
+        idxRegions, std::make_unique<screenedOptical>(
+                        0, 5.8e10, rho, temperature, opPhonEnergyGamma,
+                        /*emission=*/false, qs, "KOpGammaToK"));
+    particleType->addScatterMechanism(
+        idxRegions, std::make_unique<screenedOptical>(
+                        0, 5.8e10, rho, temperature, opPhonEnergyGamma,
+                        /*emission=*/true, qs, "KOpGammaToK"));
+  } else {
+    helperAddZeroOrderMech(particleType, idxRegions, 0, 0, 5.8e10, rho,
+                           temperature, opPhonEnergyGamma, toSameSub,
+                           "KOpGammaToK");
+  }
 
   // K -> K' (K-phonons)
   helperAddZeroOrderMech(particleType, idxRegions, 0, 0, 1.4e10, rho,
