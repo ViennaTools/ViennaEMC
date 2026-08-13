@@ -65,6 +65,17 @@ public:
   std::vector<T> nEm;  // emission event count per bin (reset each update)
   std::vector<T> nAbs; // absorption event count per bin (reset each update)
 
+  // Prefix sums for getNqInWindow(): cumW[i] = Σ_{j<i} 1/q_j,
+  // cumWN[i] = Σ_{j<i} N_j/q_j. Both have nrBins+1 entries and are refreshed
+  // by rebuildWindowSums() whenever Nq changes.
+  std::vector<T> cumW;
+  std::vector<T> cumWN;
+
+  // Screening wavevector squared [1/m^2] used in the prefix-sum weight. Zero
+  // reproduces the unscreened weight 1/q exactly, so this defaults to the
+  // unscreened case and only changes behavior once a caller sets it.
+  T qs2Screen = T(0);
+
 private:
   T loPhononEnergyEV; // ħω_LO [eV]
   T latTempK;         // lattice temperature [K]
@@ -87,6 +98,25 @@ private:
   T tauTO            = T(0); // TO–lattice coupling time [s]
   T N_TO             = T(0); // current TO phonon occupation
   T N_TO_eq          = T(0); // equilibrium TO occupation at T_lattice
+
+  /// Refresh the prefix sums backing getNqInWindow(). Called after every change
+  /// to Nq, so the windowed query stays O(1).
+  void rebuildWindowSums() {
+    cumW.assign(nrBins + 1, T(0));
+    cumWN.assign(nrBins + 1, T(0));
+    for (SizeType i = 0; i < nrBins; i++) {
+      const T q = (T(i) + T(0.5)) * dq;
+      // Transition weight for the (screened) Froehlich vertex:
+      //   |M|^2 x phase space  ~  [1/(q^2 + q_s^2)] x q dq
+      // which reduces to the unscreened 1/q when q_s = 0. The SAME weight sets
+      // both the rate (via the window-averaged occupation) and the final-state
+      // angle, so the two stay consistent by construction.
+      const T denom = q * q + qs2Screen;
+      const T w = (denom > T(0)) ? q / denom : T(0);
+      cumW[i + 1] = cumW[i] + w;
+      cumWN[i + 1] = cumWN[i] + w * Nq[i];
+    }
+  }
 
   // Planck occupation for given energy [eV] and temperature [K]
   T planck(T energyEV, T tempK) const {
@@ -152,7 +182,27 @@ public:
       N_TO_eq          = planck(inToPhononEnergy, latticeTemp);
       N_TO             = N_TO_eq;
     }
+
+    rebuildWindowSums();
   }
+
+  /**
+   * Set the screening wavevector entering the transition weight.
+   *
+   * Rebuilds the prefix sums only when the value actually changes, so calling
+   * this every timestep is cheap. MUST be called from serial code (it mutates
+   * the prefix sums that the parallel particle loop reads).
+   *
+   * @param inQs2 squared inverse screening length [1/m^2]; 0 = unscreened
+   */
+  void setScreeningQ2(T inQs2) {
+    if (inQs2 == qs2Screen)
+      return;
+    qs2Screen = inQs2;
+    rebuildWindowSums();
+  }
+
+  T getScreeningQ2() const { return qs2Screen; }
 
   /// Centre wavevector of bin i [1/m]
   T qCentre(SizeType i) const { return (T(i) + T(0.5)) * dq; }
@@ -269,6 +319,108 @@ public:
           N_TO = N_TO_eq;
       }
     }
+
+    rebuildWindowSums();
+  }
+
+  /**
+   * Coupling-weighted mean occupation over the wavevector window a transition
+   * can actually reach: [qMin, qMax] = [|k_i − k_f|, k_i + k_f].
+   *
+   * For the Fröhlich interaction the probability of a transition at wavevector
+   * q goes as |M(q)|² × (phase space) ∝ (1/q²) × q dq = dq/q, so the population
+   * a carrier samples is the 1/q-weighted mean over the allowed window — NOT
+   * the DOS-weighted (q²) mean returned by getMeanNq(). The distinction is
+   * large whenever the non-equilibrium excess is concentrated at small q, which
+   * is the generic polar case: emission piles up near q_min, exactly where the
+   * 1/q² coupling is strongest and the q² phonon DOS is smallest.
+   *
+   * O(1) via prefix sums maintained by update(), so this is cheap enough to
+   * call once per energy level on every scatter-table rebuild.
+   *
+   * Falls back to getMeanNq() when the window is empty or degenerate (e.g. a
+   * single-bin bath), so lumped-bath users are unaffected.
+   */
+  T getNqInWindow(T qMin, T qMax) const {
+    if (nrBins < 2 || qMax <= qMin)
+      return getMeanNq();
+    // Bin range covering the window (inclusive), clamped to the grid.
+    long lo = static_cast<long>(std::floor(qMin / dq));
+    long hi = static_cast<long>(std::ceil(qMax / dq));
+    if (lo < 0)
+      lo = 0;
+    if (hi > static_cast<long>(nrBins))
+      hi = static_cast<long>(nrBins);
+    if (hi - lo < 1)
+      return getMeanNq();
+    const T wSum = cumW[hi] - cumW[lo];
+    if (wSum <= T(0))
+      return getMeanNq();
+    return (cumWN[hi] - cumWN[lo]) / wSum;
+  }
+
+  /**
+   * Sample a phonon wavevector from the q-resolved transition distribution.
+   *
+   * When the occupation varies across the allowed window, the FINAL-STATE ANGLE
+   * must be sampled from the same distribution that sets the rate, or the two
+   * are inconsistent: the rate would count small-q transitions as more likely
+   * while the angular sampler still treated the window as uniformly occupied.
+   *
+   * For the unscreened Fröhlich vertex, with q² = k_i² + k_f² − 2k_i k_f cosθ,
+   *
+   *     P(cosθ) dcosθ ∝ [f(q)/(q²+q_s²)] dcosθ  →  P(q) dq ∝ f(q) q dq/(q²+q_s²)
+   *
+   * where f(q) = N_q (absorption) or N_q + 1 (emission). Inverting that CDF
+   * needs only the prefix sums already maintained for getNqInWindow():
+   * Σ N_j/q_j for the absorption part and Σ 1/q_j for the spontaneous part.
+   * Cost is O(log nrBins) per event.
+   *
+   * The caller converts back with cosθ = (k_i² + k_f² − q²) / (2 k_i k_f).
+   *
+   * Screening is handled through setScreeningQ2(): the weight becomes
+   * q/(q² + q_s²), which reduces to 1/q when q_s = 0. Both the rate and this
+   * sampler read the same prefix sums, so they cannot drift out of step.
+   *
+   * @param qMin,qMax allowed window [1/m]
+   * @param emission  true for phonon emission (f = N_q + 1), false absorption
+   * @param r         uniform random number in [0,1)
+   */
+  T sampleQ(T qMin, T qMax, bool emission, T r) const {
+    if (nrBins < 2 || qMax <= qMin)
+      return qMin;
+    long lo = static_cast<long>(std::floor(qMin / dq));
+    long hi = static_cast<long>(std::ceil(qMax / dq));
+    if (lo < 0)
+      lo = 0;
+    if (hi > static_cast<long>(nrBins))
+      hi = static_cast<long>(nrBins);
+    if (hi - lo < 1)
+      return qMin;
+
+    auto S = [&](long i) {
+      return emission ? (cumWN[i] + cumW[i]) : cumWN[i];
+    };
+    const T sLo = S(lo), sHi = S(hi);
+    const T span = sHi - sLo;
+    if (!(span > T(0)))
+      return T(0.5) * (qMin + qMax); // degenerate: fall back to window centre
+
+    const T target = sLo + r * span;
+    // binary search for the bin whose cumulative sum brackets the target
+    long a = lo, b = hi;
+    while (b - a > 1) {
+      const long mid = (a + b) / 2;
+      if (S(mid) <= target)
+        a = mid;
+      else
+        b = mid;
+    }
+    // linear interpolation inside bin a
+    const T sA = S(a), sB = S(a + 1);
+    const T frac = (sB > sA) ? (target - sA) / (sB - sA) : T(0.5);
+    const T q = (T(a) + frac) * dq;
+    return std::max(qMin, std::min(qMax, q));
   }
 
   /// Weighted-average LO phonon occupation (weight = phonon DOS ∝ q²)

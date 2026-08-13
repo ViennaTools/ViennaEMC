@@ -43,6 +43,10 @@ private:
   T effMass;
   T scatterConst;
   std::shared_ptr<emcPhononBath<T>> phononBath;
+  // When true the rate uses the coupling-weighted occupation over the allowed
+  // wavevector window instead of the DOS-weighted mean over all q. Defaults to
+  // false so existing callers are bit-for-bit unchanged.
+  bool qResolved;
   std::string nameSuffix;
   mutable std::uniform_real_distribution<T> dist;
 
@@ -61,10 +65,10 @@ public:
   emcHotPhononFroehlichAbsorption3D(
       SizeType inValley, T inPhononEnergy, T relEffMass, T eps_hi, T eps_lo,
       std::shared_ptr<emcPhononBath<T>> inPhononBath,
-      std::string inNameSuffix = "")
+      std::string inNameSuffix = "", bool inQResolved = false)
       : emcScatterMechanism<T>(inValley), phononEnergy(inPhononEnergy),
         effMass(relEffMass * constants::me), phononBath(std::move(inPhononBath)),
-        nameSuffix(inNameSuffix), dist(0., 1.) {
+        qResolved(inQResolved), nameSuffix(inNameSuffix), dist(0., 1.) {
     scatterConst =
         froehlichScatterConst3D(phononEnergy, effMass, eps_hi, eps_lo);
   }
@@ -86,7 +90,8 @@ public:
     T kI = std::sqrt(T(2) * effMass * gammaI * constants::q) / constants::hbar;
     T kF = std::sqrt(T(2) * effMass * gammaF * constants::q) / constants::hbar;
     T lnFactor = std::log((kI + kF) / (kF - kI));
-    T Nq = phononBath->getMeanNq();
+    T Nq = qResolved ? phononBath->getNqInWindow(std::fabs(kI - kF), kI + kF)
+                     : phononBath->getMeanNq();
     return scatterConst * Nq / kI * lnFactor;
   }
 
@@ -126,6 +131,10 @@ private:
   T effMass;
   T scatterConst;
   std::shared_ptr<emcPhononBath<T>> phononBath;
+  // When true the rate uses the coupling-weighted occupation over the allowed
+  // wavevector window instead of the DOS-weighted mean over all q. Defaults to
+  // false so existing callers are bit-for-bit unchanged.
+  bool qResolved;
   std::string nameSuffix;
   mutable std::uniform_real_distribution<T> dist;
 
@@ -144,10 +153,10 @@ public:
   emcHotPhononFroehlichEmission3D(
       SizeType inValley, T inPhononEnergy, T relEffMass, T eps_hi, T eps_lo,
       std::shared_ptr<emcPhononBath<T>> inPhononBath,
-      std::string inNameSuffix = "")
+      std::string inNameSuffix = "", bool inQResolved = false)
       : emcScatterMechanism<T>(inValley), phononEnergy(inPhononEnergy),
         effMass(relEffMass * constants::me), phononBath(std::move(inPhononBath)),
-        nameSuffix(inNameSuffix), dist(0., 1.) {
+        qResolved(inQResolved), nameSuffix(inNameSuffix), dist(0., 1.) {
     scatterConst =
         froehlichScatterConst3D(phononEnergy, effMass, eps_hi, eps_lo);
   }
@@ -168,7 +177,8 @@ public:
     T kI = std::sqrt(T(2) * effMass * gammaI * constants::q) / constants::hbar;
     T kF = std::sqrt(T(2) * effMass * gammaF * constants::q) / constants::hbar;
     T lnFactor = std::log((kI + kF) / (kI - kF));
-    T Nq = phononBath->getMeanNq();
+    T Nq = qResolved ? phononBath->getNqInWindow(std::fabs(kI - kF), kI + kF)
+                     : phononBath->getMeanNq();
     return scatterConst * (Nq + T(1)) / kI * lnFactor;
   }
 

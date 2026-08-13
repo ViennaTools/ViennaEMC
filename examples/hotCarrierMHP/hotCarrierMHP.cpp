@@ -68,8 +68,8 @@ using MapIdxTypeToPartType = ParticleHandler::MapIdxToParticleTypes;
 // ---- Fixed simulation numerics (not swept) -----------------------------
 static constexpr NumType dt = 5e-15;        // [s]  5 fs — resolves fastest scatter
 static constexpr SizeType nrStepsBetweenOutput = 10; // every 0.05 ps
-static constexpr SizeType nrPhononBins = 1;
-static constexpr NumType dq = 2e9;          // [m^{-1}]  single-mode phonon bin
+static constexpr SizeType nrPhononBinsDefault = 1;
+static constexpr NumType dqDefault = 2e9;   // [m^{-1}]  single-mode phonon bin
 static constexpr NumType alpha_np = 0.;     // non-parabolicity (parabolic approx)
 static constexpr NumType dk_pauli  = 4e7;   // [m^{-1}]  Pauli k-grid spacing
 static constexpr NumType kMax_pauli = 4e9;  // [m^{-1}]  covers all photoexcited k
@@ -169,6 +169,14 @@ int main(int argc, char *argv[]) {
   const NumType E_photon      = getArg(cli, "E_photon",NumType(3.1));   // [eV]
   const NumType totalTime     = getArg(cli, "total_time", NumType(10e-12)); // [s]
   const NumType tauAcoustic   = getArg(cli, "tau_ac",  NumType(30e-12)); // [s]
+  // Phonon-bath wavevector resolution. Defaults reproduce the original single
+  // lumped bin exactly; --nr_phonon_bins / --dq_bin resolve the bath in q and
+  // --use_qres additionally makes the RATES use the coupling-weighted
+  // occupation over the allowed window rather than the mean over all q.
+  const SizeType nrPhononBins = static_cast<SizeType>(
+      getArg(cli, "nr_phonon_bins", NumType(nrPhononBinsDefault)));
+  const NumType dq = getArg(cli, "dq_bin", dqDefault);
+  const bool useQRes = getArg(cli, "use_qres", NumType(0)) > 0.5;
   // Klemens: ħω_ac ≈ ħω_LO/2, applied per LO mode below.
 
   // ---- Model extensions (SI robustness studies; defaults reproduce the
@@ -289,20 +297,20 @@ int main(int argc, char *argv[]) {
       particleTypes[0]->addScatterMechanism(
           {0}, std::make_unique<emcHotPhononFroehlichAbsorption3D<NumType>>(
                    0, wLO, relEffMassE, eps_hi, eLo, phononBaths[m],
-                   "MHP-e" + std::to_string(m)));
+                   "MHP-e" + std::to_string(m), useQRes));
       particleTypes[0]->addScatterMechanism(
           {0}, std::make_unique<emcHotPhononFroehlichEmission3D<NumType>>(
                    0, wLO, relEffMassE, eps_hi, eLo, phononBaths[m],
-                   "MHP-e" + std::to_string(m)));
+                   "MHP-e" + std::to_string(m), useQRes));
       if (USE_HOLES) {
         particleTypes[1]->addScatterMechanism(
             {0}, std::make_unique<emcHotPhononFroehlichAbsorption3D<NumType>>(
                      0, wLO, relEffMassH, eps_hi, eLo, phononBaths[m],
-                     "MHP-h" + std::to_string(m)));
+                     "MHP-h" + std::to_string(m), useQRes));
         particleTypes[1]->addScatterMechanism(
             {0}, std::make_unique<emcHotPhononFroehlichEmission3D<NumType>>(
                      0, wLO, relEffMassH, eps_hi, eLo, phononBaths[m],
-                     "MHP-h" + std::to_string(m)));
+                     "MHP-h" + std::to_string(m), useQRes));
       }
     }
   } else {
