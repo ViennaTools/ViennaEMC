@@ -21,6 +21,31 @@
  *   ./hotCarrierMHP --use_hot_phonon 0               # equilibrium reference
  *   ./hotCarrierMHP --material sn --E_ex 0.2 --delta_E 0.05
  *
+ * The default model resolves the LO population in wavevector (40 bins of
+ * 5e7 1/m), screens the Froehlich vertex against the live carrier gas, and
+ * uses Kane non-parabolic bands with per-species two-band alphas. The
+ * wavevector-averaged model of the previously published runs is recovered
+ * with
+ *
+ *   ./hotCarrierMHP --nr_phonon_bins 1 --dq_bin 2e9 --use_qres 0 \
+ *                   --use_screening 0 --alpha 0
+ *
+ * The two options that change the polar coupling itself:
+ *
+ *   --use_screening  free-carrier (Debye) screening of the Froehlich vertex,
+ *                    1/q^2 -> 1/(q^2 + q_s^2), with q_s refreshed each step
+ *                    from the live density and carrier temperature of both
+ *                    species. Rate and final-state angle are both screened.
+ *   --use_qres       draw the phonon occupation from the coupling-weighted
+ *                    average over the accessible wavevector window rather than
+ *                    the density-of-states mean, for BOTH the rate and the
+ *                    angle. Requires a resolved bath (--nr_phonon_bins > 1)
+ *                    and a box large enough that the populated bins hold
+ *                    several phonon modes each; 150 nm or larger. Unscreened
+ *                    q-resolved runs do not settle, because the 1/q weight
+ *                    diverges at the small wavevectors where the excess
+ *                    collects; combine with --use_screening 1.
+ *
  * Output files carry a suffix encoding the enabled mechanisms (for example
  * carrierTempHPB_AC_ESC.txt): avgEnergyElectrons*, avgEnergyHoles*,
  * phononOccupation*, nrCarriers*, carrierTemp*. The console reports V_OC,
@@ -47,7 +72,9 @@
 #include <ParticleType/emcHole.hpp>
 #include <ScatterMechanisms/emcFroehlichInteraction.hpp>
 #include <ScatterMechanisms/emcHotPhononFroehlichMechanism.hpp>
+#include <ScatterMechanisms/emcScreenedFroehlichInteraction.hpp>
 #include <ValleyTypes/emcNonParabolicIsotropValley.hpp>
+#include <emcPlasmonScreening.hpp>
 #include <emcCarrierCarrierScatter.hpp>
 #include <emcInterCarrierScatter.hpp>
 #include <emcDevice.hpp>
@@ -68,9 +95,18 @@ using MapIdxTypeToPartType = ParticleHandler::MapIdxToParticleTypes;
 // ---- Fixed simulation numerics (not swept) -----------------------------
 static constexpr NumType dt = 5e-15;        // [s]  5 fs — resolves fastest scatter
 static constexpr SizeType nrStepsBetweenOutput = 10; // every 0.05 ps
-static constexpr SizeType nrPhononBinsDefault = 1;
-static constexpr NumType dqDefault = 2e9;   // [m^{-1}]  single-mode phonon bin
-static constexpr NumType alpha_np = 0.;     // non-parabolicity (parabolic approx)
+// Phonon bath resolved over 0-2e9 m^-1, the wavevector range Froehlich
+// transitions can reach here. The earlier single lumped bin
+// (--nr_phonon_bins 1 --dq_bin 2e9) is retained for the SI comparison.
+static constexpr SizeType nrPhononBinsDefault = 40;
+static constexpr NumType dqDefault = 5e7;   // [m^{-1}]  bin width
+// Kane non-parabolicity, eps(1 + alpha eps) = hbar^2 k^2 / 2m*. Carriers are
+// photoexcited ~0.9 eV above the band edge here, where a parabolic band
+// underestimates the wavevector and hence the scattering rates, so this is
+// exposed as a parameter (--alpha) rather than fixed at zero. The two-band
+// estimate alpha = (1/E_gap)(1 - m*/m_0)^2 gives 0.40 /eV for MAPbI3 and
+// 0.62 /eV for CsSnI3.
+static constexpr NumType alphaDefault = 0.;
 static constexpr NumType dk_pauli  = 4e7;   // [m^{-1}]  Pauli k-grid spacing
 static constexpr NumType kMax_pauli = 4e9;  // [m^{-1}]  covers all photoexcited k
 
@@ -132,7 +168,7 @@ int main(int argc, char *argv[]) {
   const NumType boxSide =
       (boxSideCLI > NumType(0))
           ? boxSideCLI
-          : (USE_BAND_FILLING ? NumType(464e-9) : NumType(100e-9));
+          : (USE_BAND_FILLING ? NumType(464e-9) : NumType(150e-9));
   const NumType Vsim = boxSide * boxSide * boxSide;
   const std::array<NumType, 3> maxPos  = {boxSide, boxSide, boxSide};
   const std::array<NumType, 3> spacing = {boxSide/10, boxSide/10, boxSide/10};
@@ -140,7 +176,9 @@ int main(int argc, char *argv[]) {
   // ---- Material parameters (CLI-overridable) ---------------------------
   // Per-material spectroscopic presets (manuscript Table 1 lists the sources).
   // Fields: eps_hi, eps_lo, m_e, m_h, hw_LO [eV], tau_LO [s], E_gap [eV].
-  //   pb      = MAPbI3   (Sendner2016 / Wright2016 / Umari2014)
+  //   pb      = MAPbI3   (Sendner2016 / Wright2016 / Umari2014; tau_LO = 0.6 ps
+//                       is the measured 300 K value, Fu et al. Nat. Commun.
+//                       8, 1300 (2017): 1.5 ps at 200 K, 1.1 ps at 250 K)
   //   sn      = CsSnI3   (Huang2013)
   //   fapbi3  = FAPbI3   (Eperon2014 gap / NatCommun2018 LO / Galkowski2016 m*)
   //   cspbi3  = CsPbI3   (gamma-phase; dielectric and LO are approximate)
@@ -155,7 +193,7 @@ int main(int argc, char *argv[]) {
   else if (matName == "fapbi3")  mp = {NumType(5.0), NumType(30.0), NumType(0.17), NumType(0.17), NumType(0.0107), NumType(2.0e-12), NumType(1.48)};
   else if (matName == "cspbi3")  mp = {NumType(5.0), NumType(18.0), NumType(0.20), NumType(0.25), NumType(0.0130), NumType(1.0e-12), NumType(1.70)};
   else if (matName == "cspbbr3") mp = {NumType(4.5), NumType(16.0), NumType(0.20), NumType(0.20), NumType(0.0200), NumType(1.0e-12), NumType(2.30)};
-  else                            mp = {NumType(5.0), NumType(33.5), NumType(0.20), NumType(0.25), NumType(0.0115), NumType(2.0e-12), NumType(1.60)}; // pb (MAPbI3)
+  else                            mp = {NumType(5.0), NumType(33.5), NumType(0.20), NumType(0.25), NumType(0.0115), NumType(0.6e-12), NumType(1.60)}; // pb (MAPbI3)
 
   const NumType eps_hi        = getArg(cli, "eps_hi",  mp.eps_hi);
   const NumType eps_lo        = getArg(cli, "eps_lo",  mp.eps_lo);
@@ -176,7 +214,44 @@ int main(int argc, char *argv[]) {
   const SizeType nrPhononBins = static_cast<SizeType>(
       getArg(cli, "nr_phonon_bins", NumType(nrPhononBinsDefault)));
   const NumType dq = getArg(cli, "dq_bin", dqDefault);
-  const bool useQRes = getArg(cli, "use_qres", NumType(0)) > 0.5;
+  // --use_qres draws BOTH the rate and the final-state angle from the resolved
+  // occupation. Taking only the rate from it, with a uniform-occupation angle,
+  // is internally inconsistent and diverges here (T_e above 5000 K at 10 ps),
+  // so that combination is not reachable from the command line.
+  const bool useQRes = getArg(cli, "use_qres", NumType(1)) > 0.5;
+  // Free-carrier (plasmon) screening of the Froehlich vertex, 1/q^2 ->
+  // 1/(q^2 + q_s^2). Debye q_s is refreshed each step from the live carrier
+  // density and carrier temperature, summed over both species. The background
+  // permittivity is eps_inf: at the LO frequency the lattice contribution IS
+  // the mode being screened, so the carriers screen against the optical
+  // constant. This matches the convention already used for the Debye-screened
+  // carrier-carrier collisions below.
+  const bool USE_SCREENING = getArg(cli, "use_screening", NumType(1)) > 0.5;
+  // Write the wavevector-resolved occupation N_q(q) of every mode at each
+  // output step (block format, one block per time). Off by default.
+  const bool DUMP_NQ = getArg(cli, "dump_nq", NumType(0)) > 0.5;
+  // Wavevector-dependent LO lifetime: tau(q) = tau_LO * (f0 + (f1-f0) q/q_max),
+  // linear between the factors at q = 0 and q = q_max. Defaults (1,1) recover
+  // the uniform lifetime exactly. No measurement of tau_LO(q) exists in these
+  // materials, so this is a sensitivity control, not a parameterization.
+  const NumType tauLOf0 = getArg(cli, "tau_lo_f0", NumType(1));
+  const NumType tauLOf1 = getArg(cli, "tau_lo_f1", NumType(1));
+  // Two-band Kane non-parabolicity, evaluated per species from the gap and
+  // effective mass of Table 1 so that no new parameter is introduced:
+  //   alpha = (1 / E_gap) (1 - m* / m_0)^2
+  // Override both with --alpha, or each with --alpha_e / --alpha_h. Setting
+  // them to zero recovers the parabolic bands used previously.
+  const NumType alphaKaneE = (NumType(1) / E_gap) *
+                             (NumType(1) - relEffMassE) * (NumType(1) - relEffMassE);
+  const NumType alphaKaneH = (NumType(1) / E_gap) *
+                             (NumType(1) - relEffMassH) * (NumType(1) - relEffMassH);
+  const NumType alphaBoth  = getArg(cli, "alpha", NumType(-1));
+  const NumType alpha_e = (alphaBoth >= NumType(0))
+                              ? alphaBoth
+                              : getArg(cli, "alpha_e", alphaKaneE);
+  const NumType alpha_h = (alphaBoth >= NumType(0))
+                              ? alphaBoth
+                              : getArg(cli, "alpha_h", alphaKaneH);
   // Klemens: ħω_ac ≈ ħω_LO/2, applied per LO mode below.
 
   // ---- Model extensions (SI robustness studies; defaults reproduce the
@@ -225,7 +300,7 @@ int main(int argc, char *argv[]) {
       1000, 4., /*usePotentialForInit=*/false, E_e);
   particleTypes[0]->addValley(
       std::make_unique<emcNonParabolicIsotropValley<NumType>>(
-          relEffMassE, constants::me, /*degFactor=*/1, alpha_np));
+          relEffMassE, constants::me, /*degFactor=*/1, alpha_e));
 
   // idx 1: holes (skipped when USE_HOLES = false → single-carrier mode)
   if (USE_HOLES) {
@@ -233,7 +308,7 @@ int main(int argc, char *argv[]) {
         1000, 4., /*usePotentialForInit=*/false, E_h);
     particleTypes[1]->addValley(
         std::make_unique<emcNonParabolicIsotropValley<NumType>>(
-            relEffMassH, constants::me, /*degFactor=*/1, alpha_np));
+            relEffMassH, constants::me, /*degFactor=*/1, alpha_h));
   }
 
   // ---- Phonon bath(s) --------------------------------------------------
@@ -249,6 +324,21 @@ int main(int argc, char *argv[]) {
   // gets its own bath and its own (eps_hi, eps_lo_n) pair reproducing that
   // partial screening exactly; summed they recover Sendner's 1/eps* = 0.17.
   const bool enableAcoustic = USE_HOT_PHONON && USE_ACOUSTIC_BATH;
+
+  // Shared plasmon-screening state. Both carrier species screen the same polar
+  // vertex, so one object is refreshed from the summed contributions each step.
+  // Disabled => q_s = 0 and every screened mechanism reduces to its unscreened
+  // form exactly.
+  const NumType screenEps = getArg(cli, "screen_eps", eps_hi);
+  auto screening =
+      std::make_shared<emcPlasmonScreening<NumType>>(screenEps, USE_SCREENING);
+  if (USE_SCREENING)
+    std::cout << "Free-carrier screening ON: background eps = " << screenEps
+              << "\n";
+  if (useQRes)
+    std::cout << "q-resolved Froehlich coupling ON (rate and angle)\n";
+  std::cout << "Non-parabolicity: alpha_e = " << alpha_e
+            << " /eV, alpha_h = " << alpha_h << " /eV\n";
 
   std::vector<NumType> modeEnergy, modeEpsLo;
   if (USE_MULTIMODE) {
@@ -266,6 +356,20 @@ int main(int argc, char *argv[]) {
   }
   const SizeType nrModes = modeEnergy.size();
 
+  // The resolved bath needs the populated bins to hold several phonon modes
+  // each, D_q = q^2 dq V / 2pi^2. Warn rather than abort, since the lowest bins
+  // carry little weight, but a box far too small makes the excess meaningless.
+  if (nrPhononBins > 1) {
+    const NumType qLow = NumType(0.5) * dq;
+    const NumType DqLow = qLow * qLow * dq * Vsim /
+                          (NumType(2) * constants::pi * constants::pi);
+    std::cout << "Phonon bath resolved: " << nrPhononBins << " bins of "
+              << dq << " m^-1, D_q = " << DqLow << " in the lowest bin\n";
+    if (DqLow < NumType(1))
+      std::cout << "  WARNING: lowest bin holds under one phonon mode; use a "
+                   "larger box or wider bins.\n";
+  }
+
   std::vector<std::shared_ptr<emcPhononBath<NumType>>> phononBaths;
   for (SizeType m = 0; m < nrModes; ++m) {
     phononBaths.push_back(std::make_shared<emcPhononBath<NumType>>(
@@ -274,6 +378,20 @@ int main(int argc, char *argv[]) {
         ridleyW, toPhononEnergy, tauTO));
   }
   auto phononBath = phononBaths[0]; // primary bath (single-mode: the only one)
+
+  if (tauLOf0 != NumType(1) || tauLOf1 != NumType(1)) {
+    const NumType qMaxBath = static_cast<NumType>(nrPhononBins) * dq;
+    for (auto &bath : phononBaths) {
+      std::vector<NumType> prof(nrPhononBins);
+      for (SizeType i = 0; i < nrPhononBins; ++i) {
+        const NumType qc = (static_cast<NumType>(i) + NumType(0.5)) * dq;
+        prof[i] = tauLO * (tauLOf0 + (tauLOf1 - tauLOf0) * qc / qMaxBath);
+      }
+      bath->setTauLOProfile(std::move(prof));
+    }
+    std::cout << "LO lifetime profile ON: tau(0) = " << tauLO * tauLOf0 * 1e12
+              << " ps -> tau(q_max) = " << tauLO * tauLOf1 * 1e12 << " ps\n";
+  }
 
   if (USE_MULTIMODE)
     std::cout << "Multi-mode Froehlich: " << nrModes << " LO branches "
@@ -290,28 +408,53 @@ int main(int argc, char *argv[]) {
               << ",  τ_TO = " << tauTO * 1e12 << " ps\n";
 
   // ---- Scatter mechanisms: Froehlich absorption + emission for e and h --
+  // The screened mechanisms carry a matched final-state angular sampler, so
+  // they are used whenever screening or the q-resolved coupling is requested.
+  // With both off the original unscreened classes are kept, which reproduces
+  // every previously published run bit-for-bit.
+  const bool useScreenedMechanisms = USE_SCREENING || useQRes;
   if (USE_HOT_PHONON) {
     for (SizeType m = 0; m < nrModes; ++m) {
       const NumType wLO = modeEnergy[m];
       const NumType eLo = modeEpsLo[m];
-      particleTypes[0]->addScatterMechanism(
-          {0}, std::make_unique<emcHotPhononFroehlichAbsorption3D<NumType>>(
-                   0, wLO, relEffMassE, eps_hi, eLo, phononBaths[m],
-                   "MHP-e" + std::to_string(m), useQRes));
-      particleTypes[0]->addScatterMechanism(
-          {0}, std::make_unique<emcHotPhononFroehlichEmission3D<NumType>>(
-                   0, wLO, relEffMassE, eps_hi, eLo, phononBaths[m],
-                   "MHP-e" + std::to_string(m), useQRes));
-      if (USE_HOLES) {
-        particleTypes[1]->addScatterMechanism(
-            {0}, std::make_unique<emcHotPhononFroehlichAbsorption3D<NumType>>(
-                     0, wLO, relEffMassH, eps_hi, eLo, phononBaths[m],
-                     "MHP-h" + std::to_string(m), useQRes));
-        particleTypes[1]->addScatterMechanism(
-            {0}, std::make_unique<emcHotPhononFroehlichEmission3D<NumType>>(
-                     0, wLO, relEffMassH, eps_hi, eLo, phononBaths[m],
-                     "MHP-h" + std::to_string(m), useQRes));
+      for (SizeType p = 0; p < (USE_HOLES ? 2u : 1u); ++p) {
+        const NumType mass = (p == 0) ? relEffMassE : relEffMassH;
+        const std::string tag =
+            (p == 0 ? "MHP-e" : "MHP-h") + std::to_string(m);
+        if (useScreenedMechanisms) {
+          particleTypes[p]->addScatterMechanism(
+              {0},
+              std::make_unique<
+                  emcScreenedHotPhononFroehlichAbsorption3D<NumType>>(
+                  0, wLO, mass, eps_hi, eLo, phononBaths[m], screening,
+                  useQRes, tag));
+          particleTypes[p]->addScatterMechanism(
+              {0},
+              std::make_unique<emcScreenedHotPhononFroehlichEmission3D<NumType>>(
+                  0, wLO, mass, eps_hi, eLo, phononBaths[m], screening,
+                  useQRes, tag));
+        } else {
+          particleTypes[p]->addScatterMechanism(
+              {0}, std::make_unique<emcHotPhononFroehlichAbsorption3D<NumType>>(
+                       0, wLO, mass, eps_hi, eLo, phononBaths[m], tag));
+          particleTypes[p]->addScatterMechanism(
+              {0}, std::make_unique<emcHotPhononFroehlichEmission3D<NumType>>(
+                       0, wLO, mass, eps_hi, eLo, phononBaths[m], tag));
+        }
       }
+    }
+  } else if (USE_SCREENING) {
+    for (SizeType p = 0; p < (USE_HOLES ? 2u : 1u); ++p) {
+      const NumType mass = (p == 0) ? relEffMassE : relEffMassH;
+      const std::string tag = (p == 0) ? "MHP-e" : "MHP-h";
+      particleTypes[p]->addScatterMechanism(
+          {0}, std::make_unique<emcScreenedFroehlichAbsorption3D<NumType>>(
+                   0, phononEnergy, mass, eps_hi, eps_lo, latticeTempK,
+                   screening, tag));
+      particleTypes[p]->addScatterMechanism(
+          {0}, std::make_unique<emcScreenedFroehlichEmission3D<NumType>>(
+                   0, phononEnergy, mass, eps_hi, eps_lo, latticeTempK,
+                   screening, tag));
     }
   } else {
     particleTypes[0]->addScatterMechanism(
@@ -412,6 +555,31 @@ int main(int argc, char *argv[]) {
     }
     for (auto &w : modeWeight) w /= wSum;
   }
+  // Debye screening wavevector from the live plasma: q_s^2 = sum_s n_s e^2 /
+  // (eps eps_0 k_B T_s), each species at its own temperature. Also handed to
+  // the phonon baths, whose transition weight q/(q^2 + q_s^2) sets both the
+  // coupling-weighted window average and the q-resolved angular sampling, so
+  // rate and angle stay screened consistently.
+  auto updateScreening = [&]() {
+    if (!USE_SCREENING)
+      return;
+    NumType qs2 = 0;
+    for (SizeType p = 0; p < (USE_HOLES ? 2u : 1u); ++p) {
+      const SizeType nrPart = handler.getNrParticles(p);
+      if (nrPart == 0)
+        continue;
+      const NumType nS = static_cast<NumType>(nrPart) / Vsim;
+      const NumType tS = emcHotCarrierOutput::getMBTemp(handler.getAvgEnergy(p)[0]);
+      if (tS <= NumType(0))
+        continue;
+      qs2 += nS * constants::q * constants::q /
+             (screenEps * constants::eps0 * constants::kB * tS);
+    }
+    screening->setQs2(qs2);
+    for (auto &bath : phononBaths)
+      bath->setScreeningQ2(qs2);
+  };
+
   auto meanNqWeighted = [&]() {
     NumType s = 0;
     for (SizeType m = 0; m < nrModes; ++m)
@@ -424,6 +592,8 @@ int main(int argc, char *argv[]) {
   if (USE_MULTIMODE)     suffix += "_MM";
   if (ridleyW > 0)       suffix += "_RID";
   if (USE_BAND_FILLING)  suffix += "_BF";
+  if (USE_SCREENING)     suffix += "_SCR";
+  if (useQRes)           suffix += "_QR";
   if (!USE_HOLES)        suffix += "_1C";  // single-carrier
   if (USE_ESC)           suffix += "_ESC";
   std::ofstream energyFileE("avgEnergyElectrons" + suffix + ".txt");
@@ -431,6 +601,15 @@ int main(int argc, char *argv[]) {
   std::ofstream phononFile("phononOccupation" + suffix + ".txt");
   std::ofstream carrierFile("nrCarriers" + suffix + ".txt");
   std::ofstream tempFile("carrierTemp" + suffix + ".txt");
+  std::ofstream spectrumFile;
+  if (DUMP_NQ && USE_HOT_PHONON) {
+    spectrumFile.open("phononSpectrum" + suffix + ".txt");
+    spectrumFile << "# q [1/m], then one N_q column per mode; blocks headed"
+                    " by '# t <s>'\n# N_0 per mode:";
+    for (auto &b : phononBaths)
+      spectrumFile << " " << b->getN0();
+    spectrumFile << "\n";
+  }
   // Per-step FD fit columns enable the extraction-weighted (working) V_OC to
   // be reconstructed in post-processing: the voltage is built from the carrier
   // temperature and chemical potential at the moment carriers are extracted,
@@ -443,8 +622,18 @@ int main(int argc, char *argv[]) {
   {
     phononFile << "# time[s]  N_LO";
     if (enableAcoustic)               phononFile << "  N_ac  T_ac[K]";
+    if (USE_SCREENING)                phononFile << "  q_s[1/m]";
     if (phononBath->ridleyEnabled())  phononFile << "  N_TO  T_TO[K]";
     phononFile << "\n";
+  }
+
+  // Seed the screening state from the photoexcited distribution so the first
+  // step already sees the correct q_s.
+  updateScreening();
+  if (USE_SCREENING) {
+    particleTypes[0]->reinitScatterTables();
+    if (USE_HOLES)
+      particleTypes[1]->reinitScatterTables();
   }
 
   // Record initial state
@@ -461,6 +650,7 @@ int main(int argc, char *argv[]) {
   if (phononBath->ridleyEnabled())
     phononFile << " " << phononBath->getMeanNTO()
                << " " << phononBath->getTOTemp();
+  if (USE_SCREENING) phononFile << " " << screening->getQs();
   phononFile << "\n";
   carrierFile << 0.0
               << " " << handler.getNrParticles(0)
@@ -499,10 +689,14 @@ int main(int argc, char *argv[]) {
         handler.extractCarriers(escHoles, 1, dt);
     }
 
-    // 5. Evolve phonon bath(s) and rebuild scatter tables (HPB only)
-    if (USE_HOT_PHONON) {
+    // 5. Evolve phonon bath(s), refresh screening, rebuild scatter tables.
+    // Screening alone also requires a rebuild, since q_s tracks the cooling
+    // carrier temperature even when the phonon population is held at equilibrium.
+    if (USE_HOT_PHONON)
       for (auto &bath : phononBaths)
         bath->update(dt);
+    updateScreening();
+    if (USE_HOT_PHONON || USE_SCREENING) {
       particleTypes[0]->reinitScatterTables();
       if (USE_HOLES)
         particleTypes[1]->reinitScatterTables();
@@ -543,7 +737,17 @@ int main(int argc, char *argv[]) {
       if (phononBath->ridleyEnabled())
         phononFile << " " << phononBath->getMeanNTO()
                    << " " << phononBath->getTOTemp();
+      if (USE_SCREENING) phononFile << " " << screening->getQs();
       phononFile << "\n";
+      if (DUMP_NQ && USE_HOT_PHONON) {
+        spectrumFile << "# t " << t << "\n";
+        for (SizeType i = 0; i < phononBaths[0]->nrBins; ++i) {
+          spectrumFile << phononBaths[0]->qCentre(i);
+          for (auto &b : phononBaths)
+            spectrumFile << " " << b->Nq[i];
+          spectrumFile << "\n";
+        }
+      }
       carrierFile << t
                   << " " << handler.getNrParticles(0)
                   << " " << (USE_HOLES ? handler.getNrParticles(1) : SizeType(0))

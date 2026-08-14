@@ -109,6 +109,7 @@ struct RunConfig {
   SizeType reinitEvery;
   bool useMultimode; // 5-mode ab initio polar set vs 44 meV single-mode lump
   bool useScreening; // free-carrier (plasmon) screening of the Froehlich vertex
+  NumType screenEps; // background permittivity entering the Debye wavevector
   bool useImpurity;  // ionized-impurity (Brooks-Herring) scattering
   // q-resolved phonon occupation in the rates: use the 1/q-weighted mean over
   // the allowed window [|k_i-k_f|, k_i+k_f] instead of the DOS-weighted mean
@@ -185,7 +186,8 @@ RunResult runOneField(NumType fieldkVcm, const RunConfig &cfg) {
       cfg.useMultimode ? Ga2O3::modeEpsLoMulti()
                        : std::vector<NumType>{Ga2O3::epsLo};
 
-  auto screening = Ga2O3::makeScreening(cfg.useScreening);
+  auto screening =
+      Ga2O3::makeScreening(cfg.useScreening, cfg.screenEps);
   // Seed with the thermal value so the first steps are not unscreened.
   screening->update(cfg.doping, cfg.temperature);
 
@@ -383,6 +385,9 @@ int main(int argc, char **argv) {
       std::max<SizeType>(1, static_cast<SizeType>(getArg(cli, "reinit_every", 1)));
   cfg.useMultimode = getArg(cli, "use_multimode", 0) > 0.5;
   cfg.useScreening = getArg(cli, "use_screening", 0) > 0.5;
+  // Background permittivity for the Debye wavevector; epsLo is the default,
+  // epsHi gives the stronger (shorter-range) screening.
+  cfg.screenEps = getArg(cli, "screen_eps", Ga2O3::epsLo);
   cfg.useImpurity = getArg(cli, "use_impurity", 0) > 0.5;
   cfg.useQResolved = getArg(cli, "use_qresolved", 0) > 0.5;
   cfg.useQResAngle = getArg(cli, "qres_angle", 1) > 0.5;

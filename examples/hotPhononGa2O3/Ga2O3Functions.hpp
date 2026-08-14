@@ -299,8 +299,16 @@ void addImpurityScattering(SizeType idxValley,
 }
 
 //! Creates the shared plasmon-screening state.
-inline std::shared_ptr<Screening> makeScreening(bool enabled) {
-  return std::make_shared<Screening>(epsLo, enabled);
+//!
+//! The background permittivity the carriers screen against is a genuine
+//! modelling choice. At the LO frequency the lattice response is the mode
+//! being screened, which argues for the optical constant epsHi; the static
+//! constant epsLo gives a longer screening length and therefore a weaker
+//! effect. Both are reported in the text, so the choice is exposed here
+//! rather than fixed.
+inline std::shared_ptr<Screening> makeScreening(bool enabled,
+                                                NumType epsBackground = epsLo) {
+  return std::make_shared<Screening>(epsBackground, enabled);
 }
 
 //! Screened polar optical scattering, equilibrium phonon occupation.

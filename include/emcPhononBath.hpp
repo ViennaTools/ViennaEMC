@@ -58,6 +58,11 @@ public:
   SizeType nrBins;
   T dq;    // [1/m]
   T tauLO; // [s]
+  // Optional per-bin LO lifetime profile [s]. Empty means the uniform tauLO
+  // above, and the update loop then follows the original code path exactly.
+  // Set via setTauLOProfile(); used to test sensitivity to a wavevector-
+  // dependent lifetime, for which no measurement exists in these materials.
+  std::vector<T> tauLOProfile;
   T N0;    // equilibrium Bose-Einstein occupation of LO mode at T_lattice
   T Vsim;  // [m^3]
 
@@ -204,6 +209,12 @@ public:
 
   T getScreeningQ2() const { return qs2Screen; }
 
+  /// Per-bin LO lifetime profile [s]; size must equal nrBins. An empty vector
+  /// restores the uniform lifetime.
+  void setTauLOProfile(std::vector<T> inProfile) {
+    tauLOProfile = std::move(inProfile);
+  }
+
   /// Centre wavevector of bin i [1/m]
   T qCentre(SizeType i) const { return (T(i) + T(0.5)) * dq; }
 
@@ -274,24 +285,32 @@ public:
       }
     }
 
-    // Update each LO q-bin and accumulate DOS-weighted decay for acoustic
-    T sumW   = T(0);
-    T sumWdN = T(0); // Σ w * (Nq_old - N_target)
+    // Update each LO q-bin and accumulate DOS-weighted decay for acoustic.
+    // With a lifetime profile the acoustic source becomes <(Nq-N*)/tau(q)>_DOS,
+    // reducing to <Nq-N*>_DOS / tauLO for a uniform profile.
+    const bool hasProfile = !tauLOProfile.empty();
+    T sumW      = T(0);
+    T sumWdN    = T(0); // Σ w * (Nq_old - N_target)            (uniform path)
+    T sumWdNtau = T(0); // Σ w * (Nq_old - N_target) / tau(q)   (profile path)
 
     for (SizeType i = 0; i < nrBins; i++) {
       T q   = qCentre(i);
       T Dph = q * q * dq * Vsim / (T(2) * constants::pi * constants::pi);
       T g   = (Dph > T(0)) ? (nEm[i] - nAbs[i]) / (Dph * dt) : T(0);
+      const T tau_i = hasProfile ? tauLOProfile[i] : tauLO;
 
       // Accumulate before updating (use values at start of step)
       if (hasAcousticBath) {
         T w   = q * q; // DOS weight ∝ q²
         sumW  += w;
-        sumWdN += w * (Nq[i] - N_target);
+        if (hasProfile)
+          sumWdNtau += w * (Nq[i] - N_target) / tau_i;
+        else
+          sumWdN += w * (Nq[i] - N_target);
       }
 
       // LO evolution equation (eq. 3 of Faber et al., generalised target)
-      Nq[i] += g * dt - (dt / tauLO) * (Nq[i] - N_target);
+      Nq[i] += g * dt - (dt / tau_i) * (Nq[i] - N_target);
       if (Nq[i] < T(0))
         Nq[i] = T(0);
 
@@ -304,19 +323,34 @@ public:
     //   dN_ac/dt = (1-w_R) <ΔN>_DOS / τ_LO - (N_ac - N_ac_eq) / τ_ac
     //   dN_TO/dt =    w_R  <ΔN>_DOS / τ_LO - (N_TO - N_TO_eq) / τ_TO
     if (hasAcousticBath) {
-      T dN_LO_mean = (sumW > T(0)) ? sumWdN / sumW : T(0);
-      T fKlemens   = hasRidley ? (T(1) - wRidley) : T(1);
-
-      N_ac += dt * fKlemens * dN_LO_mean / tauLO
-            - dt * (N_ac - N_ac_eq) / tauAcoustic;
-      if (N_ac < N_ac_eq)
-        N_ac = N_ac_eq; // reservoir cannot cool below the lattice
-
-      if (hasRidley) {
-        N_TO += dt * wRidley * dN_LO_mean / tauLO
-              - dt * (N_TO - N_TO_eq) / tauTO;
-        if (N_TO < N_TO_eq)
-          N_TO = N_TO_eq;
+      T fKlemens = hasRidley ? (T(1) - wRidley) : T(1);
+      if (!hasProfile) {
+        // Uniform lifetime: original expressions, kept verbatim so the
+        // default path is unchanged operation for operation.
+        T dN_LO_mean = (sumW > T(0)) ? sumWdN / sumW : T(0);
+        N_ac += dt * fKlemens * dN_LO_mean / tauLO
+              - dt * (N_ac - N_ac_eq) / tauAcoustic;
+        if (N_ac < N_ac_eq)
+          N_ac = N_ac_eq; // reservoir cannot cool below the lattice
+        if (hasRidley) {
+          N_TO += dt * wRidley * dN_LO_mean / tauLO
+                - dt * (N_TO - N_TO_eq) / tauTO;
+          if (N_TO < N_TO_eq)
+            N_TO = N_TO_eq;
+        }
+      } else {
+        // Lifetime profile: the reservoir source is <(Nq - N*)/tau(q)>_DOS.
+        T decayFlux = (sumW > T(0)) ? sumWdNtau / sumW : T(0);
+        N_ac += dt * fKlemens * decayFlux
+              - dt * (N_ac - N_ac_eq) / tauAcoustic;
+        if (N_ac < N_ac_eq)
+          N_ac = N_ac_eq;
+        if (hasRidley) {
+          N_TO += dt * wRidley * decayFlux
+                - dt * (N_TO - N_TO_eq) / tauTO;
+          if (N_TO < N_TO_eq)
+            N_TO = N_TO_eq;
+        }
       }
     }
 
