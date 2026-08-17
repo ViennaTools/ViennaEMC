@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <random>
@@ -110,16 +111,16 @@ public:
           fr[i] = R[i][0] * fOut[0] + R[i][1] * fOut[1] + R[i][2] * fOut[2];
         kOut = bs.fracToCart(fr);
         tetHint = -1; // rotated frame: let the locator re-seed
-        g2Hits++;
+        g2Hits.fetch_add(1, std::memory_order_relaxed);
         return true;
       }
     }
-    g2Fallbacks++;
+    g2Fallbacks.fetch_add(1, std::memory_order_relaxed);
     return sampleFinalState(energyFinal, rng, kOut, tetHint);
   }
 
-  std::size_t getG2Hits() const { return g2Hits; }
-  std::size_t getG2Fallbacks() const { return g2Fallbacks; }
+  std::size_t getG2Hits() const { return g2Hits.load(); }
+  std::size_t getG2Fallbacks() const { return g2Fallbacks.load(); }
 
   bool isKResolved() const { return kResolved; }
 
@@ -276,9 +277,9 @@ public:
     static const int edges[6][2] = {{0, 1}, {0, 2}, {0, 3},
                                     {1, 2}, {1, 3}, {2, 3}};
     for (const auto &ed : edges) {
-      const T ea = e[ed[0]], eb = e[ed[1]];
-      if ((ea - energy) * (eb - energy) < 0) {
-        const T f = (energy - ea) / (eb - ea);
+      T f;
+      // solved consistently with the engine's energy interpolation
+      if (bs.edgeCrossing(t, bandIdx, ed[0], ed[1], energy, f)) {
         for (int c = 0; c < 3; c++)
           poly[np][c] = v[ed[0]][c] + f * (v[ed[1]][c] - v[ed[0]][c]);
         if (++np == 4)
@@ -314,7 +315,8 @@ private:
   std::vector<Mechanism> mechanisms;
   bool kResolved = false;
   bool g2Loaded = false;
-  mutable std::size_t g2Hits = 0, g2Fallbacks = 0;
+  // atomic: sampling is const and may run from several ensemble threads
+  mutable std::atomic<std::size_t> g2Hits{0}, g2Fallbacks{0};
 
   /// loads /scattering/g2bins (spec v0.3): CSR rows per mechanism by name
   bool loadG2Tables(const std::string &file) {
@@ -566,11 +568,28 @@ private:
     const std::size_t nb =
         static_cast<std::size_t>((maxEnergy - binLo) / width) + 1;
     bins.assign(nb, Bin{});
+    // energy range of each tet, CONSISTENT with the engine's interpolation:
+    // with the quadratic term the band can dip below the vertex minimum
+    // (a band minimum inside a tet), so vertex-only ranges would exclude
+    // exactly the tets that matter near the band edge.
+    static const T probe[11][3] = {
+        {0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1},        // vertices
+        {.5, 0, 0}, {0, .5, 0}, {0, 0, .5},                // edges from v0
+        {.5, .5, 0}, {.5, 0, .5}, {0, .5, .5},             // remaining edges
+        {.25, .25, .25}};                                  // centroid
     for (std::int64_t t = 0; t < (std::int64_t)tets.size(); t++) {
       T lo = E[tets[t][0]], hi = lo;
       for (int i = 1; i < 4; i++) {
         lo = std::min(lo, E[tets[t][i]]);
         hi = std::max(hi, E[tets[t][i]]);
+      }
+      if (bs.hasQuadraticEnergy()) {
+        for (const auto &pr : probe) {
+          const Vec3 lam{pr[0], pr[1], pr[2]};
+          const T ev = bs.tetEnergy(t, bandIdx, lam);
+          lo = std::min(lo, ev);
+          hi = std::max(hi, ev);
+        }
       }
       if (hi <= binLo || lo >= maxEnergy || hi - lo < 1e-12)
         continue;
