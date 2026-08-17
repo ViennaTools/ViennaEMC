@@ -51,6 +51,7 @@ public:
 
     readBands(file);
     readDOS(file);
+    readIbzMap(file);
     H5Fclose(file);
 
     precomputeTetGeometry();
@@ -115,6 +116,22 @@ public:
       k[i] = recBasis[0][i] * f[0] + recBasis[1][i] * f[1] +
              recBasis[2][i] * f[2];
     return k;
+  }
+
+  /// public point location: containing tetrahedron + barycentric coords
+  /// (lam1..3 of vertices 1..3; vertex-0 weight = 1 - sum). For consumers
+  /// that interpolate their own per-vertex data (e.g. k-resolved rates).
+  std::int64_t locateTet(const Vec3 &kCart, std::int64_t &tetHint,
+                         Vec3 &lam) const {
+    return locate(toFrac(kCart), tetHint, lam);
+  }
+
+  /// IBZ map (spec /kmesh/ibz/map_full_to_ibz); empty if package lacks it
+  const std::vector<std::int64_t> &getIbzMap() const { return ibzMap; }
+  /// per-point symmetry-op index (R . k_ibz = k_full) and the integer k-ops
+  const std::vector<std::int64_t> &getIbzOpMap() const { return ibzOpMap; }
+  const std::vector<std::array<std::array<T, 3>, 3>> &getSymOps() const {
+    return symOps;
   }
 
   /// nr of walk-fallback full scans (diagnostic; large values indicate
@@ -443,6 +460,48 @@ private:
     }
     if (!energies.empty() && energies[0].size() != points.size())
       throw std::runtime_error("matpkg: energies/points size mismatch");
+  }
+
+  std::vector<std::int64_t> ibzMap;
+  std::vector<std::int64_t> ibzOpMap;
+  std::vector<std::array<std::array<T, 3>, 3>> symOps;
+
+  void readIbzMap(hid_t file) {
+    hid_t ds = H5Dopen2(file, "/kmesh/ibz/map_full_to_ibz", H5P_DEFAULT);
+    if (ds < 0)
+      return; // optional for the engine (required by the validator)
+    hid_t sp = H5Dget_space(ds);
+    hsize_t n;
+    H5Sget_simple_extent_dims(sp, &n, nullptr);
+    ibzMap.resize(n);
+    H5Dread(ds, H5T_NATIVE_INT64, H5S_ALL, H5S_ALL, H5P_DEFAULT, ibzMap.data());
+    H5Sclose(sp);
+    H5Dclose(ds);
+    ds = H5Dopen2(file, "/kmesh/ibz/map_sym_op", H5P_DEFAULT);
+    if (ds >= 0) {
+      sp = H5Dget_space(ds);
+      H5Sget_simple_extent_dims(sp, &n, nullptr);
+      ibzOpMap.resize(n);
+      H5Dread(ds, H5T_NATIVE_INT64, H5S_ALL, H5S_ALL, H5P_DEFAULT,
+              ibzOpMap.data());
+      H5Sclose(sp);
+      H5Dclose(ds);
+    }
+    ds = H5Dopen2(file, "/lattice/symmetry/rotations", H5P_DEFAULT);
+    if (ds >= 0) {
+      sp = H5Dget_space(ds);
+      hsize_t dims[3];
+      H5Sget_simple_extent_dims(sp, dims, nullptr);
+      std::vector<std::int64_t> buf(dims[0] * 9);
+      H5Dread(ds, H5T_NATIVE_INT64, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf.data());
+      symOps.resize(dims[0]);
+      for (hsize_t s2 = 0; s2 < dims[0]; s2++)
+        for (int r = 0; r < 3; r++)
+          for (int c = 0; c < 3; c++)
+            symOps[s2][r][c] = static_cast<T>(buf[(s2 * 3 + r) * 3 + c]);
+      H5Sclose(sp);
+      H5Dclose(ds);
+    }
   }
 
   void readDOS(hid_t file) {

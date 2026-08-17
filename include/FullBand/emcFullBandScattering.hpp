@@ -36,18 +36,124 @@ public:
 
   struct Mechanism {
     std::string name;
-    T deltaE;              // energy change per event [eV]
-    std::vector<T> grid;   // energy grid [eV]
-    std::vector<T> rates;  // [1/s] at selected temperature (single band, v0.1)
+    T deltaE;               // energy change per event [eV]
+    std::vector<T> grid;    // energy grid [eV] (phaseA)
+    std::vector<T> rates;   // [1/s] on grid (phaseA)
+    // phaseB anisotropy factor per full-mesh point: a(p) = Gamma_B(p) /
+    // Gamma_A(E(p)), dimensionless. The sharp energy dependence stays in the
+    // phaseA tables (evaluated at the particle's exact energy); barycentric
+    // interpolation of raw point RATES would smear thresholds over the tet's
+    // vertex-energy spread and break detailed balance (+10 meV measured).
+    std::vector<T> ptRates;
+    // Stage-2 |g|^2 final-state rows (spec v0.3): CSR over final tets
+    std::vector<std::int64_t> g2Offsets;  // (Nibz+1)
+    std::vector<std::int64_t> g2Tets;
+    std::vector<T> g2Cum;                 // per-row cumulative weights
   };
 
+  bool hasG2Tables() const { return g2Loaded; }
+
+  /// mode: 0 = auto (best available), 1 = force phaseA energy tables,
+  ///       2 = phaseB k-rates without g2 final states
   emcFullBandScattering(const std::string &packageFile,
                         const emcNumericBandStructure<T> &bandStructure,
                         std::size_t band, T temperature, T maxEnergy,
-                        T binWidth = static_cast<T>(2e-3))
+                        T binWidth = static_cast<T>(2e-3), int mode = 0)
       : bs(bandStructure), bandIdx(band) {
     loadMechanisms(packageFile, temperature);
+    if (mode != 1)
+      kResolved = loadPhaseB(packageFile, temperature);
     buildEnergyBins(maxEnergy, binWidth);
+    if (kResolved && mode == 0)
+      g2Loaded = loadG2Tables(packageFile);
+  }
+
+  /// Stage-2 final-state sampling: draw k' from the |g|^2-weighted row of
+  /// the particle's IBZ class for this mechanism; falls back to the
+  /// isotropic (phaseA-style) sampler when no row entry straddles E'.
+  template <class RNG>
+  bool sampleFinalStateG2(std::size_t mech, const Vec3 &kCart, T energyFinal,
+                          RNG &rng, Vec3 &kOut, std::int64_t &tetHint) const {
+    if (!g2Loaded)
+      return sampleFinalState(energyFinal, rng, kOut, tetHint);
+    // current IBZ class via dominant vertex of the containing tet
+    Vec3 lam;
+    std::int64_t th = tetHint;
+    const std::int64_t t0 = bs.locateTet(kCart, th, lam);
+    const auto &tet = bs.getTetrahedra()[t0];
+    const T l0 = 1 - lam[0] - lam[1] - lam[2];
+    int v = 0;
+    T best = l0;
+    for (int i = 0; i < 3; i++)
+      if (lam[i] > best) { best = lam[i]; v = i + 1; }
+    const std::int64_t ibz = bs.getIbzMap()[tet[v]];
+    const std::int64_t iop = bs.getIbzOpMap()[tet[v]];
+    const auto &m = mechanisms[mech];
+    const std::int64_t r0 = m.g2Offsets[ibz], r1 = m.g2Offsets[ibz + 1];
+    if (r1 <= r0)
+      return sampleFinalState(energyFinal, rng, kOut, tetHint);
+    // draw from cumulative weights, then find a straddling tet
+    std::uniform_real_distribution<T> U(0, m.g2Cum[r1 - 1]);
+    const T r = U(rng);
+    std::int64_t pick = r0;
+    while (pick < r1 - 1 && m.g2Cum[pick] < r)
+      pick++;
+    Vec3 fOut;
+    for (std::int64_t off = 0; off < r1 - r0; off++) {
+      const std::int64_t cand = r0 + (pick - r0 + off) % (r1 - r0);
+      if (samplePointOnIsoFrac(m.g2Tets[cand], energyFinal, rng, fOut)) {
+        // tables live in the IBZ representative's frame; rotate the sampled
+        // final state into this particle's frame (R : k_ibz -> k_full)
+        const auto &R = bs.getSymOps()[iop];
+        Vec3 fr{};
+        for (int i = 0; i < 3; i++)
+          fr[i] = R[i][0] * fOut[0] + R[i][1] * fOut[1] + R[i][2] * fOut[2];
+        kOut = bs.fracToCart(fr);
+        tetHint = -1; // rotated frame: let the locator re-seed
+        g2Hits++;
+        return true;
+      }
+    }
+    g2Fallbacks++;
+    return sampleFinalState(energyFinal, rng, kOut, tetHint);
+  }
+
+  std::size_t getG2Hits() const { return g2Hits; }
+  std::size_t getG2Fallbacks() const { return g2Fallbacks; }
+
+  bool isKResolved() const { return kResolved; }
+
+  /// total rate at Cartesian k [1/m]: phaseB = exact-energy phaseA lookup
+  /// modulated by the barycentric anisotropy factor, else plain phaseA
+  T getTotalRate(const Vec3 &kCart, T energy, std::int64_t &tetHint) const {
+    if (!kResolved)
+      return getTotalRate(energy);
+    Vec3 lam;
+    const std::int64_t t = bs.locateTet(kCart, tetHint, lam);
+    T sum = 0;
+    for (const auto &m : mechanisms)
+      sum += interp(m, energy) * interpPt(m, t, lam);
+    return sum;
+  }
+
+  template <class RNG>
+  std::size_t selectMechanism(const Vec3 &kCart, T energy, std::int64_t &tetHint,
+                              RNG &rng) const {
+    if (!kResolved)
+      return selectMechanism(energy, rng);
+    Vec3 lam;
+    const std::int64_t t = bs.locateTet(kCart, tetHint, lam);
+    T tot = 0;
+    for (const auto &m : mechanisms)
+      tot += interp(m, energy) * interpPt(m, t, lam);
+    std::uniform_real_distribution<T> U(0, tot);
+    T r = U(rng), acc = 0;
+    for (std::size_t i = 0; i < mechanisms.size(); i++) {
+      acc += interp(mechanisms[i], energy) * interpPt(mechanisms[i], t, lam);
+      if (r <= acc)
+        return i;
+    }
+    return mechanisms.size() - 1;
   }
 
   /// total scatter rate at energy [eV] -> [1/s]; clamped at table ends
@@ -61,11 +167,24 @@ public:
   /// self-scattering constant (>= max total rate on the tables)
   T getGamma0(T safety = static_cast<T>(1.2)) const {
     T mx = 0;
-    for (std::size_t i = 0; i < mechanisms[0].grid.size(); i++) {
-      T s = 0;
-      for (const auto &m : mechanisms)
-        s += m.rates[std::min(i, m.rates.size() - 1)];
-      mx = std::max(mx, s);
+    if (kResolved) {
+      // at mesh points the product a(p) * Gamma_A(E(p)) equals the raw
+      // package rate, so this recovers the true pointwise maximum
+      const auto &Ept = bs.getBandEnergies(bandIdx);
+      const std::size_t npt = mechanisms[0].ptRates.size();
+      for (std::size_t p = 0; p < npt; p++) {
+        T s = 0;
+        for (const auto &m : mechanisms)
+          s += m.ptRates[p] * interp(m, Ept[p]);
+        mx = std::max(mx, s);
+      }
+    } else {
+      for (std::size_t i = 0; i < mechanisms[0].grid.size(); i++) {
+        T s = 0;
+        for (const auto &m : mechanisms)
+          s += m.rates[std::min(i, m.rates.size() - 1)];
+        mx = std::max(mx, s);
+      }
     }
     return safety * mx;
   }
@@ -109,6 +228,39 @@ public:
       }
     }
     const std::int64_t t = B.tets[pick];
+    if (samplePointOnIso(t, energy, rng, kOut)) {
+      tetHint = t;
+      return true;
+    }
+    // degenerate polygon: centroid fallback
+    {
+      const auto &tetc = bs.getTetrahedra()[t];
+      const auto &ptsc = bs.getPoints();
+      Vec3 c{};
+      for (int i = 0; i < 4; i++)
+        for (int j = 0; j < 3; j++)
+          c[j] += ptsc[tetc[i]][j] / 4;
+      kOut = bs.fracToCart(c);
+      tetHint = t;
+      return true;
+    }
+  }
+
+  /// uniform point on the iso-surface polygon of `energy` inside tet t;
+  /// false if the tet does not straddle that energy
+  template <class RNG>
+  bool samplePointOnIso(std::int64_t t, T energy, RNG &rng, Vec3 &kOut) const {
+    Vec3 f;
+    if (!samplePointOnIsoFrac(t, energy, rng, f))
+      return false;
+    kOut = bs.fracToCart(f);
+    return true;
+  }
+
+  /// as samplePointOnIso but returns FRACTIONAL coordinates
+  template <class RNG>
+  bool samplePointOnIsoFrac(std::int64_t t, T energy, RNG &rng,
+                            Vec3 &fOut) const {
     // iso-surface polygon of level `energy` inside tet t (in frac coords)
     const auto &tet = bs.getTetrahedra()[t];
     const auto &pts = bs.getPoints();
@@ -133,15 +285,8 @@ public:
           break;
       }
     }
-    if (np < 3) { // degenerate (energy grazes a vertex): fall back to centroid
-      Vec3 c{};
-      for (int i = 0; i < 4; i++)
-        for (int j = 0; j < 3; j++)
-          c[j] += v[i][j] / 4;
-      kOut = bs.fracToCart(c);
-      tetHint = t;
-      return true;
-    }
+    if (np < 3)
+      return false; // tet does not straddle this energy (or grazes a vertex)
     if (np == 4) // order quad vertices to avoid bow-tie (swap if needed)
       orderQuad(poly);
     // triangulate fan (1 or 2 triangles), pick by area, sample uniformly
@@ -157,12 +302,9 @@ public:
       a = 1 - a;
       b2 = 1 - b2;
     }
-    Vec3 f{};
     for (int c = 0; c < 3; c++)
-      f[c] = poly[0][c] + a * (poly[tri + 1][c] - poly[0][c]) +
-             b2 * (poly[tri + 2][c] - poly[0][c]);
-    kOut = bs.fracToCart(f);
-    tetHint = t;
+      fOut[c] = poly[0][c] + a * (poly[tri + 1][c] - poly[0][c]) +
+                b2 * (poly[tri + 2][c] - poly[0][c]);
     return true;
   }
 
@@ -170,6 +312,125 @@ private:
   const emcNumericBandStructure<T> &bs;
   std::size_t bandIdx;
   std::vector<Mechanism> mechanisms;
+  bool kResolved = false;
+  bool g2Loaded = false;
+  mutable std::size_t g2Hits = 0, g2Fallbacks = 0;
+
+  /// loads /scattering/g2bins (spec v0.3): CSR rows per mechanism by name
+  bool loadG2Tables(const std::string &file) {
+    hid_t f = H5Fopen(file.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
+    if (f < 0)
+      return false;
+    hid_t grp = H5Gopen2(f, "/scattering/g2bins", H5P_DEFAULT);
+    if (grp < 0) {
+      H5Fclose(f);
+      return false;
+    }
+    bool any = false;
+    for (auto &m : mechanisms) {
+      hid_t mg = H5Gopen2(grp, m.name.c_str(), H5P_DEFAULT);
+      if (mg < 0)
+        continue;
+      auto read1 = [&](const char *n, auto &vec, hid_t memType) {
+        hid_t ds = H5Dopen2(mg, n, H5P_DEFAULT);
+        hid_t sp = H5Dget_space(ds);
+        hsize_t cnt;
+        H5Sget_simple_extent_dims(sp, &cnt, nullptr);
+        vec.resize(cnt);
+        H5Dread(ds, memType, H5S_ALL, H5S_ALL, H5P_DEFAULT, vec.data());
+        H5Sclose(sp);
+        H5Dclose(ds);
+      };
+      read1("row_offsets", m.g2Offsets, H5T_NATIVE_INT64);
+      read1("tet_ids", m.g2Tets, H5T_NATIVE_INT64);
+      std::vector<double> w;
+      read1("weights", w, H5T_NATIVE_DOUBLE);
+      m.g2Cum.resize(w.size());
+      // per-row cumulative sums
+      for (std::size_t r = 0; r + 1 < m.g2Offsets.size(); r++) {
+        T acc = 0;
+        for (std::int64_t i = m.g2Offsets[r]; i < m.g2Offsets[r + 1]; i++) {
+          acc += static_cast<T>(w[i]);
+          m.g2Cum[i] = acc;
+        }
+      }
+      H5Gclose(mg);
+      any = true;
+    }
+    H5Gclose(grp);
+    H5Fclose(f);
+    return any;
+  }
+
+  /// barycentric interpolation of per-point rates within tet t
+  T interpPt(const Mechanism &m, std::int64_t t, const Vec3 &lam) const {
+    const auto &tet = bs.getTetrahedra()[t];
+    const T l0 = 1 - lam[0] - lam[1] - lam[2];
+    return l0 * m.ptRates[tet[0]] + lam[0] * m.ptRates[tet[1]] +
+           lam[1] * m.ptRates[tet[2]] + lam[2] * m.ptRates[tet[3]];
+  }
+
+  /// loads /scattering/phaseB (spec v0.2) as per-point anisotropy factors
+  /// a(p) = Gamma_B(p) / Gamma_A(E(p)) attached to the phaseA mechanisms
+  /// (matched by group name). Returns false if the group is absent.
+  bool loadPhaseB(const std::string &file, T /*temperature*/) {
+    const auto &ibz = bs.getIbzMap();
+    if (ibz.empty())
+      return false;
+    hid_t f = H5Fopen(file.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
+    if (f < 0)
+      throw std::runtime_error("matpkg: cannot open " + file);
+    hid_t grp = H5Gopen2(f, "/scattering/phaseB", H5P_DEFAULT);
+    if (grp < 0) {
+      H5Fclose(f);
+      return false;
+    }
+    const auto &Ept = bs.getBandEnergies(bandIdx);
+    bool any = false;
+    H5G_info_t info;
+    H5Gget_info(grp, &info);
+    for (hsize_t i = 0; i < info.nlinks; i++) {
+      char name[256];
+      H5Lget_name_by_idx(grp, ".", H5_INDEX_NAME, H5_ITER_NATIVE, i, name,
+                         sizeof(name), H5P_DEFAULT);
+      Mechanism *mech = nullptr;
+      for (auto &m : mechanisms)
+        if (m.name == name) {
+          mech = &m;
+          break;
+        }
+      if (!mech)
+        continue; // phaseB group with no phaseA counterpart: ignore
+      hid_t mg = H5Gopen2(grp, name, H5P_DEFAULT);
+      hid_t ds = H5Dopen2(mg, "k_rates", H5P_DEFAULT);
+      hid_t sp = H5Dget_space(ds);
+      hsize_t dims[3];
+      H5Sget_simple_extent_dims(sp, dims, nullptr);
+      std::vector<double> buf(dims[0] * dims[1] * dims[2]);
+      H5Dread(ds, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf.data());
+      H5Sclose(sp);
+      H5Dclose(ds);
+      H5Gclose(mg);
+      // temperature index 0 (single-T v0.2), band slice = bandIdx
+      const std::size_t b = std::min<std::size_t>(bandIdx, dims[1] - 1);
+      mech->ptRates.resize(ibz.size());
+      for (std::size_t p = 0; p < ibz.size(); p++) {
+        const T raw = static_cast<T>(buf[b * dims[2] + ibz[p]]);
+        const T ref = interp(*mech, Ept[p]);
+        // ref == 0 only where the phaseA rate vanishes (e.g. emission below
+        // threshold); the runtime product is 0 there whatever a is
+        mech->ptRates[p] = ref > 0 ? raw / ref : static_cast<T>(1);
+      }
+      any = true;
+    }
+    H5Gclose(grp);
+    H5Fclose(f);
+    if (any) // mechanisms without k-data act isotropically (a = 1)
+      for (auto &m : mechanisms)
+        if (m.ptRates.empty())
+          m.ptRates.assign(ibz.size(), static_cast<T>(1));
+    return any;
+  }
 
   struct Bin {
     std::vector<std::int64_t> tets;
