@@ -87,6 +87,14 @@ public:
   /// drives both the residual mesh dependence and the low-field cubic
   /// anisotropy. See validation/m1-si-production/engine_transport_audit.md
   T tetEnergy(std::int64_t t, std::size_t band, const Vec3 &lam) const {
+    if (subdiv && band < midE.size() && !midE[band].empty()) {
+      T sub[4];
+      const int sidx = subTetOf(lam, sub);
+      T e = 0;
+      for (int i = 0; i < 4; i++)
+        e += sub[i] * nodeEnergy(t, band, SUBTET[sidx][i]);
+      return e;
+    }
     const auto &tet = tets[t];
     const auto &E = energies[band];
     const T e0 = E[tet[0]];
@@ -114,6 +122,78 @@ public:
         e -= static_cast<T>(0.5) * w * dot * hbar / qe;
       }
     return e;
+  }
+
+  // ---- 1-to-8 tetrahedron subdivision for the ENERGY field ----------------
+  // The linear interpolant of a convex band overestimates E inside every tet
+  // (equilibrium <E> came out 13.4 meV too hot at 32^3, 2.3 meV at 64^3),
+  // which with steeply energy-dependent rates biases the distribution and
+  // makes energy gain direction-dependent. Splitting each tet 1-to-8 with
+  // edge-midpoint energies taken from the QUADRATIC Hermite interpolant (the
+  // vertex gradients are exact, from the Wannier Hamiltonian) keeps every
+  // iso-surface planar and every DOS weight Blochl-linear - all the validated
+  // machinery still applies - while cutting the interpolation error 4x.
+  // Nodes: 0-3 parent vertices, 4..9 midpoints of edges
+  // 01,02,03,12,13,23.
+  static constexpr int SUBTET[8][4] = {{0,4,5,6},{1,4,7,8},{2,5,7,9},{3,6,8,9},
+                                       {4,9,5,6},{4,9,6,8},{4,9,8,7},{4,9,7,5}};
+  static constexpr int EDGE_NODE[6][2] = {{0,1},{0,2},{0,3},{1,2},{1,3},{2,3}};
+
+  void setSubdivision(bool on) {
+    subdiv = on && !vertexVel.empty();
+    if (subdiv && midE.empty())
+      buildMidpointEnergies();
+  }
+  bool hasSubdivision() const { return subdiv; }
+
+  /// energy of node n (0..9) of tet t
+  T nodeEnergy(std::int64_t t, std::size_t band, int n) const {
+    if (n < 4)
+      return energies[band][tets[t][n]];
+    return midE[band][t][n - 4];
+  }
+
+  /// fractional position of node n (0..9) of tet t
+  Vec3 nodePos(std::int64_t t, int n) const {
+    if (n < 4)
+      return points[tets[t][n]];
+    const auto &e = EDGE_NODE[n - 4];
+    const Vec3 &pa = points[tets[t][e[0]]], &pb = points[tets[t][e[1]]];
+    Vec3 d{pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]};
+    for (int c = 0; c < 3; c++)
+      d[c] -= std::nearbyint(d[c]);              // shortest image
+    return Vec3{pa[0] + T(0.5) * d[0], pa[1] + T(0.5) * d[1],
+                pa[2] + T(0.5) * d[2]};
+  }
+
+  /// which sub-tet holds barycentric lam (l0 = 1-sum), and its local coords
+  static int subTetOf(const Vec3 &lam, T sub[4]) {
+    const T l[4] = {1 - lam[0] - lam[1] - lam[2], lam[0], lam[1], lam[2]};
+    int idx = -1;
+    for (int i = 0; i < 4; i++)
+      if (l[i] >= T(0.5)) { idx = i; break; }
+    if (idx < 0) {                                // central octahedron
+      const T sp = l[0] - l[1], tp = l[2] - l[3];
+      if (sp >= std::abs(tp)) idx = 4;
+      else if (tp >= std::abs(sp)) idx = 7;
+      else if (sp <= -std::abs(tp)) idx = 6;
+      else idx = 5;
+    }
+    const double *M = SUBINV[idx];
+    for (int r = 0; r < 4; r++)
+      sub[r] = static_cast<T>(M[4*r+0]) * l[0] + static_cast<T>(M[4*r+1]) * l[1]
+             + static_cast<T>(M[4*r+2]) * l[2] + static_cast<T>(M[4*r+3]) * l[3];
+    return idx;
+  }
+
+  /// energy range of sub-tet s of tet t
+  void subRange(std::int64_t t, std::size_t band, int s, T &lo, T &hi) const {
+    lo = hi = nodeEnergy(t, band, SUBTET[s][0]);
+    for (int i = 1; i < 4; i++) {
+      const T e = nodeEnergy(t, band, SUBTET[s][i]);
+      lo = std::min(lo, e);
+      hi = std::max(hi, e);
+    }
   }
 
   /// Parameter t in [0,1] where the band reaches `energy` along the edge
@@ -176,6 +256,22 @@ public:
   }
 
   /// returns group velocity [m/s] = grad_k E / hbar (constant per tetrahedron)
+  /// largest group speed over the mesh for this band [m/s]. The driver caps
+  /// a free flight with it so the flight's energy excursion cannot exceed a
+  /// Gamma0 slab. Using the START-of-flight velocity instead is unsafe: v_par
+  /// can be ~0 at the start (giving an infinite cap) right before the field
+  /// accelerates the particle across several slabs.
+  T getMaxSpeed(std::size_t band) const {
+    T mx = 0;
+    if (band < vertexVel.size() && !vertexVel[band].empty()) {
+      const auto &V = vertexVel[band];
+      for (std::size_t i = 0; i < V.size(); i++)
+        mx = std::max(mx, std::sqrt(V[i][0] * V[i][0] + V[i][1] * V[i][1] +
+                                    V[i][2] * V[i][2]));
+    }
+    return mx;
+  }
+
   Vec3 getVelocity(const Vec3 &kCart, std::size_t band,
                    std::int64_t &tetHint) const {
     Vec3 lam;
@@ -265,6 +361,37 @@ private:
   // Interpolating analytic vertex velocities barycentrically restores a
   // continuous v(k). See validation/m1-si-production/engine_transport_audit.md
   std::vector<std::vector<std::array<T, 3>>> vertexVel;
+  bool subdiv = false;
+  std::vector<std::vector<std::array<T, 6>>> midE;   // [band][tet][edge]
+  static constexpr double SUBINV[8][16] = {{1.000000, -1.000000, -1.000000, -1.000000, 0.000000, 2.000000, 0.000000, 0.000000, 0.000000, 0.000000, 2.000000, 0.000000, 0.000000, 0.000000, 0.000000, 2.000000}, {-1.000000, 1.000000, -1.000000, -1.000000, 2.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 2.000000, 0.000000, 0.000000, 0.000000, 0.000000, 2.000000}, {-1.000000, -1.000000, 1.000000, -1.000000, 2.000000, 0.000000, 0.000000, 0.000000, 0.000000, 2.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 2.000000}, {-1.000000, -1.000000, -1.000000, 1.000000, 2.000000, 0.000000, 0.000000, 0.000000, 0.000000, 2.000000, 0.000000, 0.000000, 0.000000, 0.000000, 2.000000, 0.000000}, {0.000000, 2.000000, 0.000000, 0.000000, -1.000000, 1.000000, 1.000000, 1.000000, 1.000000, -1.000000, 1.000000, -1.000000, 1.000000, -1.000000, -1.000000, 1.000000}, {1.000000, 1.000000, 1.000000, -1.000000, 0.000000, 0.000000, 2.000000, 0.000000, 1.000000, -1.000000, -1.000000, 1.000000, -1.000000, 1.000000, -1.000000, 1.000000}, {2.000000, 0.000000, 0.000000, 0.000000, 1.000000, -1.000000, 1.000000, 1.000000, -1.000000, 1.000000, -1.000000, 1.000000, -1.000000, 1.000000, 1.000000, -1.000000}, {1.000000, 1.000000, -1.000000, 1.000000, 0.000000, 0.000000, 0.000000, 2.000000, -1.000000, 1.000000, 1.000000, -1.000000, 1.000000, -1.000000, 1.000000, -1.000000}};
+
+  /// midpoint energies from the quadratic Hermite edge profile:
+  ///   E(1/2) = (Ea+Eb)/2 - (1/8) (grad_b - grad_a).(x_b - x_a)
+  /// exact for a quadratic band; the vertex gradients are analytic.
+  void buildMidpointEnergies() {
+    midE.assign(energies.size(), {});
+    for (std::size_t b = 0; b < energies.size(); b++) {
+      if (b >= vertexVel.size() || vertexVel[b].empty())
+        continue;
+      midE[b].resize(tets.size());
+      const auto &V = vertexVel[b];
+      for (std::size_t t = 0; t < tets.size(); t++)
+        for (int e = 0; e < 6; e++) {
+          const int ia = EDGE_NODE[e][0], ib = EDGE_NODE[e][1];
+          const std::int64_t va = tets[t][ia], vb = tets[t][ib];
+          Vec3 df{points[vb][0] - points[va][0], points[vb][1] - points[va][1],
+                  points[vb][2] - points[va][2]};
+          for (int c = 0; c < 3; c++)
+            df[c] -= std::nearbyint(df[c]);
+          const Vec3 dx = fracToCart(df);
+          T dot = 0;
+          for (int c = 0; c < 3; c++)
+            dot += (V[vb][c] - V[va][c]) * dx[c];
+          midE[b][t][e] = T(0.5) * (energies[b][va] + energies[b][vb])
+                          - dot * hbar / qe / T(8);
+        }
+    }
+  }
   // EXPERIMENTAL, OFF by default (enable with setQuadraticEnergy(true)).
   // The quadratic Hermite energy term is correct in itself and fixes the
   // equilibrium <E> (13.4 -> ~0 meV excess at 32^3), but the final-state
