@@ -2,6 +2,7 @@
 #define EMC_BULK_AVERAGES_HPP
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <string>
@@ -208,12 +209,137 @@ public:
     return m2vOverRate[pt] / m0[pt] / (3 * kT) * scale;
   }
 
+  /*! \brief SERTA mobility on the ensemble's OWN temperature.
+   *
+   * getMobilitySERTA divides by 3kT of the LATTICE, which is only the right
+   * normalisation if the ensemble is thermal at that temperature. It is not
+   * when the band-edge DOS is under-resolved: the missing low-energy states
+   * push the equilibrium distribution up, the ensemble sits hot at ANY field
+   * (measured <E> = 0.0446 eV at 25 V/cm against 1.5kT = 0.0388 on a REFINE=6
+   * silicon package), and the lattice-kT SERTA inflates by T_eff / T_lattice.
+   * That alone accounted for most of a 16-20% MC-vs-SERTA gap (2026-09-02).
+   *
+   * This variant replaces 3kT with 2<E>, i.e. the ensemble's own effective
+   * temperature, so the two estimators are compared on the SAME distribution.
+   * The residual between it and getMobility() is then transport physics
+   * (in-scattering, inelasticity, momentum retention), not a normalisation.
+   */
+  T getMobilitySERTASelfConsistent(T scale = 1e4, SizeType pt = 0) const {
+    const T e = getMeanEnergy(pt);
+    if (m0[pt] <= 0 || e <= 0)
+      return T{0};
+    return m2vOverRate[pt] / m0[pt] / (2 * e) * scale;
+  }
+
   /// time-weighted energy histogram for one point; empty when disabled
   std::vector<T> getEnergyHistogram(SizeType pt = 0) const {
     if (!nBins)
       return {};
     return std::vector<T>(hist.begin() + pt * nBins,
                           hist.begin() + (pt + 1) * nBins);
+  }
+};
+
+/*! \brief Mean-squared displacement at fixed checkpoint times, and the
+ * diffusion coefficient and Einstein mobility derived from it.
+ *
+ * WHY. This is a THIRD, independent route to the mobility: no drift under a
+ * field, and no SERTA normalisation by a temperature. Both of the other two
+ * were shown on 2026-09-02 to inherit the mesh's band-edge error through
+ * exactly those channels. D from the slope of the position variance depends
+ * on neither, and has an exact answer on the parabolic test package through
+ * the Einstein relation, D = mu kT / e.
+ *
+ * PORTED FROM ViennaMC `AverageMSD` / `AverageDiffusion` (dev_wendelin_final)
+ * in intent: MSD against each trajectory's own reference position, D from
+ * the time derivative of the variance about the mean (the donor's second
+ * method, "better for shorter simulation times"). The donor sampled every
+ * particle's position list per step; here the caller records one displacement
+ * per particle per CHECKPOINT time, which is what makes it usable inside the
+ * event-driven flight loop, and D is a least-squares slope over the
+ * checkpoints rather than a single-time ratio, which removes the ballistic
+ * transient.
+ *
+ * Units are the caller's: displacements in m and times in s give D in m^2/s;
+ * getEinsteinMobility takes kT in the same energy unit the caller uses (eV
+ * here) and returns m^2/Vs times `scale`.
+ *
+ * @param nTimes       number of checkpoints, index 0 being the reference
+ * @param tStart       time of checkpoint 0
+ * @param dtSample     checkpoint spacing
+ */
+template <class T> class emcDisplacementStatistics {
+private:
+  SizeType nTimes;
+  T tStart, dtSample;
+  std::vector<std::array<T, 3>> s1, s2;   // sum dr, sum dr^2 per checkpoint
+  std::vector<T> n;                        // particles counted per checkpoint
+
+public:
+  emcDisplacementStatistics(SizeType inNTimes = 16, T inTStart = 0,
+                            T inDtSample = 1)
+      : nTimes(std::max<SizeType>(2, inNTimes)), tStart(inTStart),
+        dtSample(inDtSample), s1(nTimes, {T{0}, T{0}, T{0}}),
+        s2(nTimes, {T{0}, T{0}, T{0}}), n(nTimes, T{0}) {}
+
+  SizeType getNrTimes() const { return nTimes; }
+  T getTime(SizeType i) const { return tStart + static_cast<T>(i) * dtSample; }
+
+  /// displacement of one particle from its own reference, at checkpoint i
+  inline void addSample(SizeType i, const T dr[3]) noexcept {
+    for (int c = 0; c < 3; c++) {
+      s1[i][c] += dr[c];
+      s2[i][c] += dr[c] * dr[c];
+    }
+    n[i] += 1;
+  }
+
+  void merge(const emcDisplacementStatistics<T> &o) {
+    if (o.nTimes != nTimes)
+      return;
+    for (SizeType i = 0; i < nTimes; i++) {
+      for (int c = 0; c < 3; c++) {
+        s1[i][c] += o.s1[i][c];
+        s2[i][c] += o.s2[i][c];
+      }
+      n[i] += o.n[i];
+    }
+  }
+
+  T getMeanDisplacement(SizeType i, int c) const {
+    return n[i] > 0 ? s1[i][c] / n[i] : T{0};
+  }
+  /// variance about the mean - the drift (vd t) is removed, so this is the
+  /// diffusive spread even under a field
+  T getVariance(SizeType i, int c) const {
+    if (n[i] <= 0)
+      return T{0};
+    const T m = s1[i][c] / n[i];
+    return s2[i][c] / n[i] - m * m;
+  }
+
+  /*! \brief Diffusion coefficient along component c: half the least-squares
+   * slope of the variance against time over checkpoints [iFirst, nTimes).
+   * Skipping the first checkpoints removes the ballistic regime (variance
+   * grows as t^2 for t below the momentum relaxation time). */
+  T getDiffusion(int c, SizeType iFirst = 1) const {
+    T st = 0, sv = 0, stt = 0, stv = 0, cnt = 0;
+    for (SizeType i = std::max<SizeType>(1, iFirst); i < nTimes; i++) {
+      if (n[i] <= 0)
+        continue;
+      const T t = getTime(i) - getTime(0), v = getVariance(i, c);
+      st += t; sv += v; stt += t * t; stv += t * v; cnt += 1;
+    }
+    if (cnt < 2)
+      return T{0};
+    const T den = cnt * stt - st * st;
+    return den != 0 ? (cnt * stv - st * sv) / den / 2 : T{0};
+  }
+
+  /*! \brief Einstein mobility mu = e D / kT. With kT in eV the charge cancels:
+   * D [m^2/s] / kT [eV] is already m^2/Vs; `scale` = 1e4 gives cm^2/Vs. */
+  static T getEinsteinMobility(T D, T kT, T scale = 1e4) {
+    return kT > 0 ? D / kT * scale : T{0};
   }
 };
 

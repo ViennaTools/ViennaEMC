@@ -128,10 +128,18 @@ int main(int argc, char **argv) {
   // better than a warning everybody must.
   //
   // ENGINE_NBANDS=1 remains the deliberate no-interband CONTROL.
+  // ...but only when the package can actually SUPPLY per-source-band rows. On
+  // a v0.3 package (flat g2bins) more than one instance runs every band on
+  // band-0 final states - "MACHINERY ONLY", which the engine says not to read
+  // as physics - so the format decides: v0.4 -> all bands, v0.3 -> 1. Band 0
+  // is constructed first to ask.
+  std::vector<std::unique_ptr<FBS>> scatBand;
+  scatBand.emplace_back(new FBS(pkg, bs, 0, T, cbm + 1.0, binW, mode));
   const int engineNBands =
       std::getenv("ENGINE_NBANDS")
           ? std::atoi(std::getenv("ENGINE_NBANDS"))
-          : static_cast<int>(bs.getNrBands());
+          : (scatBand[0]->hasPerSourceBandG2()
+                 ? static_cast<int>(bs.getNrBands()) : 1);
   // Interband bookkeeping. Time-weighted occupancy is the number that matters
   // - an event count says transfers happen, occupancy says whether the two
   // bands reach a steady split, which is what Gamma->L transfer in GaAs will
@@ -140,8 +148,7 @@ int main(int argc, char **argv) {
   // occupancy in femtoseconds: atomic<double> would need C++20 fetch_add, and
   // integer fs is exact and plenty - a flight is O(1e-13 s).
   static std::atomic<long> bandFs[8] = {};
-  std::vector<std::unique_ptr<FBS>> scatBand;
-  for (int b = 0; b < engineNBands; b++)
+  for (int b = 1; b < engineNBands; b++)
     scatBand.emplace_back(new FBS(pkg, bs, b, T, cbm + 1.0, binW, mode));
   FBS &scat = *scatBand[0];
   for (auto &sb : scatBand)
@@ -243,8 +250,11 @@ int main(int argc, char **argv) {
   // one independent replica -> (mu, <E>, selfscat%)
   static constexpr int EHIST_N = 150;
   static constexpr double EHIST_DE = 0.002;   // 2 meV bins to 0.30 eV
-  struct Res { double mu, vd, energy, self, cosTheta, retention, speedRatio, failFrac, accel, v2, muEns;
-               double gTab, gReal, dEmean, dEmax; std::vector<double> hist; };
+  struct Res { double mu, vd, energy, self, cosTheta, retention, speedRatio, failFrac, accel, v2, muEns, muEnsT;
+               // ORDER MATCHES THE POSITIONAL INITIALIZER in runReplica: dif/muE/muET
+               // come after dEmax there. Putting them after muEnsT once shifted
+               // every later field by three slots and printed D as g_tab.
+               double gTab, gReal, dEmean, dEmax, dif, muE, muET; std::vector<double> hist; };
   // DTCAP_SCALE: test knob. The flight cap must be physically INERT - it
   // only chops the trajectory more finely, it does not change the trajectory
   // or the scattering physics. Shrinking it by 10x must leave mu unchanged
@@ -287,6 +297,11 @@ int main(int argc, char **argv) {
       int band = 0;
       NBS::Vec3 k;
       std::int64_t hint = -1;
+      // real-space displacement, for the MSD / Einstein-mobility estimator.
+      // Bulk is homogeneous, so r is a diagnostic only and never feeds the
+      // dynamics; it is integrated with the same trapezoid as the drift.
+      double r[3] = {0, 0, 0}, r0[3] = {0, 0, 0};
+      int is = 0;          // next MSD checkpoint to record
     };
     std::vector<P> ps(nPart);
     for (auto &p : ps) {
@@ -310,6 +325,12 @@ int main(int argc, char **argv) {
     // of the table, the dynamics is inconsistent with the rates the SERTA
     // integral reads.
     emcBulkAverages<double> avg(1, EHIST_N, EHIST_DE);
+    // MSD checkpoints every 1 ps from the end of the transient; checkpoint 0
+    // is each particle's reference position. D is fitted from checkpoint
+    // MSD_FIT_FROM on, past the ballistic t^2 regime (tau ~ 1e-13 s).
+    static constexpr int NT_MSD = 15, MSD_FIT_FROM = 5;
+    static constexpr double DT_MSD = 1e-12;
+    emcDisplacementStatistics<double> disp(NT_MSD, tTransient, DT_MSD);
     long nRealAcc = 0;
     // PER-EVENT ENERGY CONSERVATION. The final state is sampled on the
     // iso-surface of the SAME band field the engine walks on, so
@@ -393,6 +414,31 @@ int main(int argc, char **argv) {
         for (int i = 0; i < 3; i++)
           p.k[i] -= QE * F * dir[i] * dt / HBAR;
         const auto vEnd = bs.getVelocity(p.k, p.band, p.hint);
+        {
+          // displacement: trapezoid over the substep, and every MSD
+          // checkpoint that falls inside (t, t+dt] is recorded at its exact
+          // time by linear interpolation within the step. No RNG use, so
+          // the trajectory stream is untouched.
+          const double vm[3] = {0.5 * (vCur[0] + vEnd[0]),
+                                0.5 * (vCur[1] + vEnd[1]),
+                                0.5 * (vCur[2] + vEnd[2])};
+          while (p.is < NT_MSD) {
+            const double ts = tTransient + p.is * DT_MSD;
+            if (ts > t + dt) break;
+            const double f = std::max(0.0, ts - t);
+            double rs[3];
+            for (int c = 0; c < 3; c++) rs[c] = p.r[c] + vm[c] * f;
+            if (p.is == 0) {
+              for (int c = 0; c < 3; c++) p.r0[c] = rs[c];
+            } else {
+              double dr[3];
+              for (int c = 0; c < 3; c++) dr[c] = rs[c] - p.r0[c];
+              disp.addSample(static_cast<SizeType>(p.is), dr);
+            }
+            p.is++;
+          }
+          for (int c = 0; c < 3; c++) p.r[c] += vm[c] * dt;
+        }
         if (t + dt > tTransient) {
           const double w = std::min(dt, t + dt - tTransient);
           const double vMid = 0.5 * ((vCur[0] + vEnd[0]) * dir[0] +
@@ -500,6 +546,27 @@ int main(int argc, char **argv) {
         }
       }
     }
+    // Diffusion from the MSD slope, averaged over the components TRANSVERSE to
+    // the field (all three at F = 0): the parallel component also carries the
+    // field-induced velocity dispersion. Einstein mobility on the lattice
+    // temperature (the physical statement) and on the ensemble's own
+    // temperature 2<E>/3 (the self-consistent one - they coincide only when
+    // the ensemble is thermal at the lattice, which the band-edge mesh error
+    // prevents on coarse packages).
+    double dTr = 0;
+    {
+      int nc = 0;
+      for (int c = 0; c < 3; c++) {
+        if (F == 0.0 || std::fabs(dir[c]) < 1e-9) {
+          dTr += disp.getDiffusion(c, MSD_FIT_FROM);
+          nc++;
+        }
+      }
+      dTr = nc ? dTr / nc : 0.0;
+    }
+    const double muE = emcDisplacementStatistics<double>::getEinsteinMobility(dTr, KB * T);
+    const double muET = emcDisplacementStatistics<double>::getEinsteinMobility(
+        dTr, 2.0 * avg.getMeanEnergy() / 3.0);
     // Sign, unit scaling and the SERTA integrand are emcBulkAverages' job now,
     // so a second caller cannot re-derive one of them slightly differently.
     // Sign convention by CARRIER. Electrons drift AGAINST F, so -vd/F is
@@ -519,9 +586,11 @@ int main(int argc, char **argv) {
                dtAcc > 0 ? dvAcc / dtAcc : 0.0,
                avg.getMeanSquaredVelocity(),
                avg.getMobilitySERTA(KB * T),
+               avg.getMobilitySERTASelfConsistent(),   // 3kT -> 2<E>
                avg.getMeanScatterRate(),
                nRealAcc / (nPart * (tTotal - tTransient)),
-               dEn ? dEsum / dEn : 0.0, dEmax, avg.getEnergyHistogram()};
+               dEn ? dEsum / dEn : 0.0, dEmax, dTr, muE, muET,
+               avg.getEnergyHistogram()};
   };
 
   const unsigned nThreads = std::min<unsigned>(
@@ -543,23 +612,26 @@ int main(int argc, char **argv) {
     for (auto &th : pool)
       th.join();
 
-    double muM = 0, eM = 0, sM = 0, cM = 0, fM = 0, aM = 0, v2M = 0, meM = 0;
+    double muM = 0, eM = 0, sM = 0, cM = 0, fM = 0, aM = 0, v2M = 0, meM = 0, metM = 0;
     double vdM = 0;   // measured, not back-converted from mu
+    double dM = 0, muEM = 0, muETM = 0;
+    emcReplicaStatistics<double> repStat;   // SE of the Einstein mobility
 
     double retM = 0, spdM = 0;
     double gtM = 0, grM = 0, deM = 0, dxM = 0;
     std::vector<double> hAcc(EHIST_N, 0.0);
     for (const auto &r : res) {
       muM += r.mu; vdM += r.vd; eM += r.energy; sM += r.self; cM += r.cosTheta;
+      dM += r.dif; muEM += r.muE; muETM += r.muET; repStat.add("muE", r.muE);
       retM += r.retention; spdM += r.speedRatio;
-      fM += r.failFrac; aM += r.accel; v2M += r.v2; meM += r.muEns;
+      fM += r.failFrac; aM += r.accel; v2M += r.v2; meM += r.muEns; metM += r.muEnsT;
       gtM += r.gTab; grM += r.gReal; deM += r.dEmean;
       for (int i = 0; i < EHIST_N; i++) hAcc[i] += r.hist[i];
       if (r.dEmax > dxM) dxM = r.dEmax;
     }
-    muM /= nRep; vdM /= nRep; eM /= nRep; sM /= nRep; cM /= nRep; fM /= nRep; aM /= nRep;
+    muM /= nRep; vdM /= nRep; dM /= nRep; muEM /= nRep; muETM /= nRep; eM /= nRep; sM /= nRep; cM /= nRep; fM /= nRep; aM /= nRep;
     retM /= nRep; spdM /= nRep;
-    v2M /= nRep; meM /= nRep; gtM /= nRep; grM /= nRep; deM /= nRep;
+    v2M /= nRep; meM /= nRep; metM /= nRep; gtM /= nRep; grM /= nRep; deM /= nRep;
     double se = 0;
     if (nRep > 1) {
       double var = 0;
@@ -567,7 +639,7 @@ int main(int argc, char **argv) {
       se = std::sqrt(var / (nRep - 1) / nRep);   // standard error of the mean
     }
     std::printf("  %8.0f %14.4e %14.1f %10.1f %14.4f %12.1f %10.3f %9.1f"
-                " %11.3e %11.3e   cfb=%zu  mu_ens=%.1f"
+                " %11.3e %11.3e   cfb=%zu  mu_ens=%.1f  mu_ensT=%.1f  D=%.3fcm2/s  mu_E=%.1f+/-%.1f  mu_ET=%.1f"
                 "  g_tab=%.4e g_real=%.4e ratio=%.3f"
                 "  dE_mean=%.3e dE_max=%.3e eV  g0viol=%zu"
                 "  retention=%+.4f  spd_ratio=%.4f\n",
@@ -576,7 +648,8 @@ int main(int argc, char **argv) {
                 // the NEGATIVE of the real drift velocity and was read as
                 // evidence that holes drift with the field.
                 Fcm, vdM, muM, se, eM, sM, cM, fM, aM, v2M,
-                scat.getCentroidFallbacks(), meM, gtM, grM,
+                scat.getCentroidFallbacks(), meM, metM, dM * 1e4, muEM,
+                repStat.getStandardError("muE"), muETM, gtM, grM,
                 gtM > 0 ? grM / gtM : 0.0, deM, dxM,
                 scat.getG0Violations(), retM, spdM);
     if (std::getenv("EHIST")) {
@@ -588,6 +661,19 @@ int main(int argc, char **argv) {
       std::fclose(fh);
       std::printf("# energy histogram -> %s\n", std::getenv("EHIST"));
     }
+  }
+  {
+    std::size_t na = 0, np_ = 0, nb_ = 0, nc = 0, nf = 0;
+    for (auto &sb : scatBand) {
+      na += sb->getCoulombAnalytic(); np_ += sb->getCoulombProposals();
+      nb_ += sb->getCoulombBracketFail(); nc += sb->getCoulombCapped();
+      nf += sb->getCoulombFallbacks();
+    }
+    if (na || nf)
+      std::printf("# coulomb kernel-corrected placement: %zu events, %.2f proposals/event, "
+                  "%zu bracket failures, %zu weight-capped (%.2f%% of proposals), "
+                  "%zu fell back to rows\n", na, na ? double(np_) / na : 0.0, nb_,
+                  nc, np_ ? 100.0 * nc / np_ : 0.0, nf);
   }
   std::printf("# a-weighted final states: %zu draws, %zu rejected (%.1f%%)\n",
               scat.getAWeightTries(), scat.getAWeightRej(),

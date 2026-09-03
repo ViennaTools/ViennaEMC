@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include <complex>
 #include <hdf5.h>
 
 /*! \brief Full-band numeric band structure loaded from a .matpkg material
@@ -53,6 +54,8 @@ public:
     readBands(file);
     readDOS(file);
     readIbzMap(file);
+    readEdgeParabolic(file);
+    readWannierGauge(file);
     H5Fclose(file);
 
     precomputeTetGeometry();
@@ -61,6 +64,124 @@ public:
 
   emcNumericBandStructure(const emcNumericBandStructure &) = delete;
   emcNumericBandStructure &operator=(const emcNumericBandStructure &) = delete;
+
+  /*! \brief Per-band parabolic band-edge parameters, stamped by the
+   * converter (`check_edge_dos.gate`) from a quadratic fit to E(k) at mesh
+   * points. OPTIONAL: absent on packages built before 2026-09-02, in which
+   * case `has` is false and the engine falls back to fitting the DOS shape.
+   * Indexed by PACKAGE band; a band whose minimum lies above the histogram
+   * range is simply not listed. */
+  struct EdgeParabolic {
+    bool has = false;
+    std::vector<std::int64_t> band;
+    std::vector<double> mD;    // DOS mass (m1 m2 m3)^(1/3) [m_e]
+    std::vector<std::int64_t> nv;   // symmetry-star valley count
+    std::vector<double> e0;    // minimum above the global edge [eV]
+    // WP3d: valley GEOMETRY for analytic final-state placement. star is
+    // (nb, nvMax, 3) fractional minima, NaN-padded; masses (nb,3) ascending;
+    // axes (nb,3,3) rows = principal axes of valley 0 in cartesian k.
+    bool hasStar = false;
+    std::size_t nvMax = 0;
+    std::vector<double> star, masses, axes;
+    /// index into the arrays for a package band, or -1
+    std::ptrdiff_t find(std::int64_t b) const {
+      for (std::size_t i = 0; i < band.size(); i++)
+        if (band[i] == b) return static_cast<std::ptrdiff_t>(i);
+      return -1;
+    }
+  } edgePar;
+
+  /*! \brief Wannier-gauge eigenvectors of the package bands at every mesh
+   * point (stamped by stamp_wannier_gauge.py): (npts, nwan, nb) complex.
+   * Bloch overlap I(k,k') ~= |[U^+(k') U(k)]_{n'n}|^2 - the cell-periodic
+   * overlap that the screened-Coulomb matrix element carries, in the
+   * smooth-gauge approximation (exact up to q x WF-spread). OPTIONAL. */
+  bool hasGauge = false;
+  std::size_t gaugeNwan = 0, gaugeNb = 0;
+  std::vector<std::complex<float>> gaugeU;    // [(pt * nwan + m) * nb + n]
+
+  void readWannierGauge(hid_t file) {
+    for (const char *lvl : {"/bands", "/bands/electron", "/bands/electron/wannier_gauge",
+                            "/bands/electron/wannier_gauge/U"})
+      if (H5Lexists(file, lvl, H5P_DEFAULT) <= 0) return;
+    hid_t ds = H5Dopen2(file, "/bands/electron/wannier_gauge/U", H5P_DEFAULT);
+    if (ds < 0) return;
+    hid_t sp = H5Dget_space(ds);
+    hsize_t dims[3] = {0, 0, 0};
+    if (H5Sget_simple_extent_ndims(sp) != 3) { H5Sclose(sp); H5Dclose(ds); return; }
+    H5Sget_simple_extent_dims(sp, dims, nullptr);
+    // h5py writes complex64 as a compound {r: f32, i: f32}
+    hid_t mt = H5Tcreate(H5T_COMPOUND, 2 * sizeof(float));
+    H5Tinsert(mt, "r", 0, H5T_NATIVE_FLOAT);
+    H5Tinsert(mt, "i", sizeof(float), H5T_NATIVE_FLOAT);
+    std::vector<float> buf(2 * dims[0] * dims[1] * dims[2]);
+    const bool ok = H5Dread(ds, mt, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf.data()) >= 0;
+    H5Tclose(mt); H5Sclose(sp); H5Dclose(ds);
+    if (!ok || dims[0] != points.size()) return;
+    gaugeNwan = dims[1]; gaugeNb = dims[2];
+    gaugeU.resize(dims[0] * dims[1] * dims[2]);
+    for (std::size_t i = 0; i < gaugeU.size(); i++)
+      gaugeU[i] = std::complex<float>(buf[2 * i], buf[2 * i + 1]);
+    hasGauge = true;
+  }
+
+  /// |[U^+(k') U(k)]_{n' n}|^2 between mesh points ip (band n) and jp (band n2)
+  T overlap(std::int64_t ip, std::size_t n, std::int64_t jp, std::size_t n2) const {
+    if (!hasGauge || n >= gaugeNb || n2 >= gaugeNb) return T(1);
+    std::complex<float> acc(0, 0);
+    for (std::size_t m = 0; m < gaugeNwan; m++)
+      acc += std::conj(gaugeU[(static_cast<std::size_t>(jp) * gaugeNwan + m) * gaugeNb + n2]) *
+             gaugeU[(static_cast<std::size_t>(ip) * gaugeNwan + m) * gaugeNb + n];
+    return static_cast<T>(std::norm(acc));
+  }
+
+  /// dominant vertex (mesh point index) of the tet containing kCart, or -1
+  std::int64_t nearestVertex(const Vec3 &kCart, std::int64_t &hint) const {
+    Vec3 lam;
+    const std::int64_t t = locateTet(kCart, hint, lam);
+    if (t < 0) return -1;
+    const T l0 = 1 - lam[0] - lam[1] - lam[2];
+    int v = 0; T best = l0;
+    for (int i = 0; i < 3; i++) if (lam[i] > best) { best = lam[i]; v = i + 1; }
+    return tets[t][v];
+  }
+
+  void readEdgeParabolic(hid_t file) {
+    // every level must exist; H5Lexists on a deep path with a missing
+    // intermediate is an error, not a false, on this HDF5
+    for (const char *lvl : {"/bands", "/bands/electron", "/bands/electron/edges",
+                            "/bands/electron/edges/parabolic"})
+      if (H5Lexists(file, lvl, H5P_DEFAULT) <= 0) return;
+    auto rd = [&](const char *name, auto &out, hid_t memType) {
+      const std::string path = std::string("/bands/electron/edges/parabolic/") + name;
+      hid_t ds = H5Dopen2(file, path.c_str(), H5P_DEFAULT);
+      if (ds < 0) return false;
+      hid_t sp = H5Dget_space(ds);
+      const hssize_t n = H5Sget_simple_extent_npoints(sp);
+      out.resize(n > 0 ? static_cast<std::size_t>(n) : 0);
+      const bool ok = n > 0 && H5Dread(ds, memType, H5S_ALL, H5S_ALL,
+                                       H5P_DEFAULT, out.data()) >= 0;
+      H5Sclose(sp); H5Dclose(ds);
+      return ok;
+    };
+    const bool ok = rd("band", edgePar.band, H5T_NATIVE_INT64) &&
+                    rd("m_d", edgePar.mD, H5T_NATIVE_DOUBLE) &&
+                    rd("nv", edgePar.nv, H5T_NATIVE_INT64) &&
+                    rd("e0", edgePar.e0, H5T_NATIVE_DOUBLE);
+    edgePar.has = ok && edgePar.band.size() == edgePar.mD.size() &&
+                  edgePar.band.size() == edgePar.nv.size() &&
+                  edgePar.band.size() == edgePar.e0.size();
+    if (!edgePar.has) { edgePar = EdgeParabolic{}; return; }
+    const std::size_t nb = edgePar.band.size();
+    const bool geo = rd("star", edgePar.star, H5T_NATIVE_DOUBLE) &&
+                     rd("masses", edgePar.masses, H5T_NATIVE_DOUBLE) &&
+                     rd("axes", edgePar.axes, H5T_NATIVE_DOUBLE) &&
+                     nb > 0 && edgePar.star.size() % (3 * nb) == 0 &&
+                     edgePar.masses.size() == 3 * nb && edgePar.axes.size() == 9 * nb;
+    edgePar.hasStar = geo;
+    edgePar.nvMax = geo ? edgePar.star.size() / (3 * nb) : 0;
+    if (!geo) { edgePar.star.clear(); edgePar.masses.clear(); edgePar.axes.clear(); }
+  }
 
   SizeTypeOrInt64 getNrPoints() const { return points.size(); }
   SizeTypeOrInt64 getNrTetrahedra() const { return tets.size(); }
@@ -315,6 +436,14 @@ public:
     return recBasis;
   }
   /// fractional -> Cartesian [1/m]  (k = B^T f)
+  /// cartesian [1/m] -> fractional (the inverse of fracToCart)
+  Vec3 cartToFrac(const Vec3 &k) const {
+    Vec3 f{};
+    for (int i = 0; i < 3; i++)
+      f[i] = recBasisInv[0][i] * k[0] + recBasisInv[1][i] * k[1] +
+             recBasisInv[2][i] * k[2];
+    return f;
+  }
   Vec3 fracToCart(const Vec3 &f) const {
     Vec3 k{};
     for (int i = 0; i < 3; i++)

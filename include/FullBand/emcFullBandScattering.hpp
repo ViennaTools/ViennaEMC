@@ -11,6 +11,8 @@
 #include <string>
 #include <vector>
 
+#include <cstdio>
+#include <limits>
 #include <hdf5.h>
 
 #include <FullBand/emcNumericBandStructure.hpp>
@@ -56,6 +58,16 @@ public:
     // bands' iso-surfaces for final states.
     std::vector<std::int64_t> g2Band;
     std::vector<T> g2Cum;                 // per-row cumulative weights
+    // WP3d: screened-Coulomb angular kernel, beta^2 [1/m^2]. Zero for every
+    // mechanism except ionized impurities (read from the phaseA attribute
+    // `beta_1_per_m` that add_impurity_mechanism.py writes). When set, the
+    // final state is placed WITHIN the drawn tet with density 1/(q^2+beta^2)^2
+    // rather than uniformly on the iso-polygon - see sampleFinalStateG2.
+    T coulombBeta2 = 0;
+    // WP3d: destination band of a Coulomb mechanism (phaseA attr `dest_band`);
+    // SIZE_MAX means the source band. With the Bloch overlap in the tables,
+    // one mechanism per destination band carries the intra/interband split.
+    std::size_t coulombDestBand = SIZE_MAX;
   };
 
   bool hasG2Tables() const { return g2Loaded; }
@@ -79,6 +91,7 @@ public:
     }
     loadDos(packageFile, band);
     buildEnergyBins(maxEnergy, binWidth);
+    buildValleyFrames();
     if (kResolved && mode == 0)
       g2Loaded = loadG2Tables(packageFile);
   }
@@ -86,6 +99,174 @@ public:
   /// Stage-2 final-state sampling: draw k' from the |g|^2-weighted row of
   /// the particle's IBZ class for this mechanism; falls back to the
   /// isotropic (phaseA-style) sampler when no row entry straddles E'.
+  /*! \brief Final state for a screened-Coulomb mechanism: KERNEL-CORRECTED
+   * rejection sampling around the particle's actual k, landed exactly on the
+   * numeric band. Nothing about the band is analytic here - only the PROPOSAL
+   * distribution is, and rejection sampling returns the target distribution
+   * |V(k,k')|^2 x (surface density of states) for any proposal whose weight is
+   * bounded; the proposal only sets the acceptance rate.
+   *
+   * WHY NOT ROWS. The g2 rows belong to the IBZ representative of the tet's
+   * dominant vertex, so for a kernel peaked below the mesh cell the forward
+   * core is selected around k_rep, up to one cell from the particle - at
+   * N_I = 1e17 that is ~3 screening lengths. Measured on the parabolic
+   * package against the exact BH+phonon mobility 595.3: rows with uniform
+   * placement 512-530, with the within-tet kernel correction 547-549, and
+   * the event-averaged <cos theta> 0.606 against the exact 0.711. No
+   * mesh-side fix reaches that; this is the field's full-band Coulomb
+   * treatment (Fischetti-Laux lineage).
+   *
+   * HOW. (1) nearest stamped valley minimum k_min, r = |k - k_min|;
+   * (2) theta from the EXACT Brooks-Herring inverse CDF on the sphere of
+   * radius r, azimuth uniform; rotate (k - k_min); (3) rescale along that
+   * ray by a bracket-and-bisect on the numeric band so E(k') = E exactly;
+   * (4) accept with weight w = (|k'-k_min|/r)^3 * f(q_actual)/f(q_proposed)
+   * against a cap: the r^3 factor is the angular density of states of a
+   * non-spherical surface relative to the sphere, the kernel ratio corrects
+   * the proposal's q. For a parabolic isotropic band w == 1, so the
+   * parabolic test is exact by construction; for silicon's ellipsoids the
+   * weight is correct but the cap costs efficiency (Herring-Vogt proposal is
+   * the follow-up). Weight above the cap is COUNTED - a bias indicator.
+   */
+  template <class RNG>
+  bool sampleFinalStateCoulomb(std::size_t mech, const Vec3 &kCart, T energyFinal,
+                               RNG &rng, Vec3 &kOut, std::int64_t &tetHint,
+                               int *bandOut = nullptr) const {
+    const std::size_t nd = mechanisms[mech].coulombDestBand == SIZE_MAX
+                               ? bandIdx : mechanisms[mech].coulombDestBand;
+    if (nd >= valleysByBand.size() || valleysByBand[nd].empty() || nd > maxDestBand)
+      return false;
+    const auto &valleys = valleysByBand[nd];
+    const bool valleysIsotropic = isoByBand[nd];
+    const T b2 = mechanisms[mech].coulombBeta2;
+    // Bloch overlap needs the mesh point nearest the SOURCE state
+    std::int64_t hSrc = tetHint;
+    const std::int64_t vSrc = bs.hasGauge ? bs.nearestVertex(kCart, hSrc) : -1;
+    // nearest valley image (frames hold cartesian minima; minimum image in frac)
+    const Vec3 kf = bs.cartToFrac(kCart);
+    std::size_t vb = 0; Vec3 dbest{}; T r2 = std::numeric_limits<T>::max();
+    for (std::size_t v = 0; v < valleys.size(); v++) {
+      const Vec3 mf = bs.cartToFrac(valleys[v].kmin);
+      Vec3 d{};
+      for (int i = 0; i < 3; i++) { d[i] = kf[i] - mf[i]; d[i] -= std::round(d[i]); }
+      const Vec3 dc = bs.fracToCart(d);
+      const T q = dc[0]*dc[0] + dc[1]*dc[1] + dc[2]*dc[2];
+      if (q < r2) { r2 = q; dbest = dc; vb = v; }
+    }
+    if (!(r2 > 0) || r2 == std::numeric_limits<T>::max()) return false;
+    const auto &V = valleys[vb];
+    const T rEff = std::sqrt(r2);                    // real radius, for the BH draw
+    Vec3 kmin{};
+    for (int i = 0; i < 3; i++) kmin[i] = kCart[i] - dbest[i];
+    // HERRING-VOGT: in k* = M^{-1/2}(k - k_min) the stamped ellipsoid is a
+    // sphere and the angular density of states is UNIFORM, so a direction
+    // proposed there needs no r^3 Jacobian; only the kernel mismatch between
+    // the proposal's q and the real q is corrected. Reduces to the plain
+    // sphere for an isotropic band.
+    Vec3 ks{};
+    for (int r = 0; r < 3; r++) ks[r] = V.mih[r][0]*dbest[0] + V.mih[r][1]*dbest[1] + V.mih[r][2]*dbest[2];
+    const T rho = std::sqrt(ks[0]*ks[0] + ks[1]*ks[1] + ks[2]*ks[2]);
+    if (!(rho > 0)) return false;
+    Vec3 u0{}; for (int i = 0; i < 3; i++) u0[i] = ks[i] / rho;
+    Vec3 a{}; a[std::abs(u0[0]) < 0.6 ? 0 : (std::abs(u0[1]) < 0.6 ? 1 : 2)] = 1;
+    Vec3 e1{u0[1]*a[2]-u0[2]*a[1], u0[2]*a[0]-u0[0]*a[2], u0[0]*a[1]-u0[1]*a[0]};
+    { const T n = std::sqrt(e1[0]*e1[0]+e1[1]*e1[1]+e1[2]*e1[2]); for (int i=0;i<3;i++) e1[i]/=n; }
+    const Vec3 e2{u0[1]*e1[2]-u0[2]*e1[1], u0[2]*e1[0]-u0[0]*e1[2], u0[0]*e1[1]-u0[1]*e1[0]};
+    // COULOMB_CAP overrides the importance cap (A/B for the truncation bias)
+    static const T capEnv = std::getenv("COULOMB_CAP") ? static_cast<T>(std::atof(std::getenv("COULOMB_CAP"))) : T(0);
+    // Default cap 8 for anisotropic valleys. Measured on Si 1e17 with a
+    // 512-proposal budget (no fallbacks): cap 4 -> 881 +/- 28, cap 8 -> 861
+    // +/- 13 (0.38% of proposals capped), cap 16 -> 836 +/- 29 (0.00%). The
+    // truncation at cap 4 biases mu high by ~3-4%; 8 is within the SEs of 16
+    // at half the cost. The tail comes from the (sm/s0)^3 Jacobian where the
+    // real surface bulges beyond the stamped ellipsoid (non-parabolicity); a
+    // Kane-corrected proposal radius would shrink it - not done.
+    const T wcap = capEnv > 0 ? capEnv : (valleysIsotropic ? T(2) : T(8));
+    std::uniform_real_distribution<T> U01(0, 1);
+    // proposal budget: exhausting it falls back to the ROWS, which are the
+    // smeared, over-relaxing path - measured on Si 1e17: cap 16 with a budget
+    // of 64 sent 4% of events to the rows and pulled mu from 840 to 793.
+    // Spending more proposals is always cheaper than that.
+    static const int maxProp = std::getenv("COULOMB_MAXPROP") ? std::atoi(std::getenv("COULOMB_MAXPROP")) : 512;
+    for (int prop = 0; prop < maxProp; prop++) {
+      coulombProposals.fetch_add(1, std::memory_order_relaxed);
+      // Brooks-Herring theta on a sphere of radius rEff: x = 1 - cos(theta)
+      const T u = U01(rng);
+      const T A = 1 / b2 - u * (1 / b2 - 1 / (4 * r2 + b2));
+      const T x = std::min<T>(2, std::max<T>(0, (1 / A - b2) / (2 * r2)));
+      const T ct = 1 - x, st = std::sqrt(std::max<T>(0, 1 - ct * ct));
+      const T phi = 2 * static_cast<T>(M_PI) * U01(rng);
+      Vec3 os{};                                     // direction in k*
+      for (int i = 0; i < 3; i++)
+        os[i] = ct * u0[i] + st * (std::cos(phi) * e1[i] + std::sin(phi) * e2[i]);
+      Vec3 d0{};                                     // k'_0 - k_min on the ellipsoid
+      for (int r = 0; r < 3; r++)
+        d0[r] = rho * (V.mh[r][0]*os[0] + V.mh[r][1]*os[1] + V.mh[r][2]*os[2]);
+      const T s0 = std::sqrt(d0[0]*d0[0] + d0[1]*d0[1] + d0[2]*d0[2]);
+      if (!(s0 > 0)) continue;
+      Vec3 ud{}; for (int i = 0; i < 3; i++) ud[i] = d0[i] / s0;
+      // land on the numeric band along the ray from k_min
+      std::int64_t h = tetHint;
+      auto Eat = [&](T sc) {
+        Vec3 k{}; for (int i = 0; i < 3; i++) k[i] = kmin[i] + sc * ud[i];
+        return bs.getEnergy(k, nd, h);
+      };
+      T sLo = s0, sHi = s0, eLo = Eat(s0), eHi = eLo;
+      bool ok = true;
+      if (eLo > energyFinal) {
+        int it = 0;
+        while (eLo > energyFinal && it++ < 14) { sLo *= T(0.7); eLo = Eat(sLo); }
+        ok = eLo <= energyFinal;
+      } else {
+        int it = 0;
+        while (eHi < energyFinal && it++ < 14) { sHi *= T(1.4); eHi = Eat(sHi); }
+        ok = eHi >= energyFinal;
+      }
+      if (!ok) { coulombBracketFail.fetch_add(1, std::memory_order_relaxed); continue; }
+      T sm = s0;
+      for (int it = 0; it < 40; it++) {
+        sm = T(0.5) * (sLo + sHi);
+        const T em = Eat(sm);
+        if (std::abs(em - energyFinal) < T(1e-8)) break;
+        if (em < energyFinal) sLo = sm; else sHi = sm;
+      }
+      Vec3 kp{};
+      for (int i = 0; i < 3; i++) kp[i] = kmin[i] + sm * ud[i];
+      // importance weight = target / proposal:
+      //   kernel ratio   - proposal q on the rEff sphere vs the real q;
+      //   (sm/s0)^3      - the angular density of states of the REAL surface
+      //                    relative to the stamped ellipsoid, i.e. the exact
+      //                    Jacobian of projecting the ellipsoid onto the numeric
+      //                    surface along the ray from k_min. With it the fast
+      //                    path is exact for ANY surface star-shaped about the
+      //                    valley minimum, not only for a parabolic ellipsoid;
+      //                    on one it is 1 up to mesh noise.
+      const T qp2 = 2 * r2 * x;
+      T qa2 = 0;
+      for (int i = 0; i < 3; i++) qa2 += (kp[i] - kCart[i]) * (kp[i] - kCart[i]);
+      const T ratio = (qp2 + b2) / (qa2 + b2);
+      const T jac = (sm / s0) * (sm / s0) * (sm / s0);
+      // Bloch overlap |<u_nd,k'|u_n,k>|^2 (<= 1): the rate tables already
+      // carry it, so it enters the acceptance as a plain factor
+      T I = 1;
+      if (vSrc >= 0) {
+        std::int64_t hd = h;
+        const std::int64_t vDst = bs.nearestVertex(kp, hd);
+        if (vDst >= 0) I = bs.overlap(vSrc, bandIdx, vDst, nd);
+      }
+      const T w = ratio * ratio * jac * I;
+      if (w > wcap) coulombCapped.fetch_add(1, std::memory_order_relaxed);
+      if (U01(rng) * wcap <= w) {
+        kOut = kp;
+        tetHint = h;
+        if (bandOut) *bandOut = static_cast<int>(nd);
+        coulombAnalytic.fetch_add(1, std::memory_order_relaxed);
+        return true;
+      }
+    }
+    return false;
+  }
+
   template <class RNG>
   bool sampleFinalStateG2(std::size_t mech, const Vec3 &kCart, T energyFinal,
                           RNG &rng, Vec3 &kOut, std::int64_t &tetHint,
@@ -94,6 +275,15 @@ public:
     // state. It stays at the source band unless the package carries dest_band
     // rows, so this is inert on pre-v0.4 packages.
     if (bandOut) *bandOut = static_cast<int>(bandIdx);
+    // WP3d: closed-form kernels are placed by kernel-corrected rejection
+    // sampling from the particle's actual k - see sampleFinalStateCoulomb. Rows for such a mechanism are
+    // only the fallback.
+    if (mech < mechanisms.size() && mechanisms[mech].coulombBeta2 > 0 &&
+        bs.edgePar.hasStar) {
+      if (sampleFinalStateCoulomb(mech, kCart, energyFinal, rng, kOut, tetHint, bandOut))
+        return true;
+      coulombFallbacks.fetch_add(1, std::memory_order_relaxed);
+    }
     if (!g2Loaded)
       return sampleFinalState(energyFinal, rng, kOut, tetHint, mech);
     // current IBZ class via dominant vertex of the containing tet
@@ -109,6 +299,13 @@ public:
     const std::int64_t ibz = bs.getIbzMap()[tet[v]];
     const std::int64_t iop = bs.getIbzOpMap()[tet[v]];
     const auto &m = mechanisms[mech];
+    // A mechanism WITHOUT g2 rows in a package where others have them (an
+    // ionized-impurity mechanism added to a phaseA-only package, say) leaves
+    // g2Offsets EMPTY - loadG2Tables skips absent groups. Indexing it was
+    // undefined behaviour; every v0.4 package so far carried rows for every
+    // mechanism, so it never fired. Such a mechanism samples DOS-weighted.
+    if (m.g2Offsets.size() < static_cast<std::size_t>(ibz) + 2)
+      return sampleFinalState(energyFinal, rng, kOut, tetHint, mech);
     const std::int64_t r0 = m.g2Offsets[ibz], r1 = m.g2Offsets[ibz + 1];
     if (r1 <= r0)
       return sampleFinalState(energyFinal, rng, kOut, tetHint, mech);
@@ -164,14 +361,66 @@ public:
         continue;
       }
       if (samplePointOnIsoFrac(id, energyFinal, rng, fOut, db)) {
-        if (bandOut) *bandOut = static_cast<int>(db);
-        g2Walk.fetch_add(trial > 0 ? 1 : 0, std::memory_order_relaxed);
-        g2WalkLen.fetch_add(static_cast<std::size_t>(trial),
-                            std::memory_order_relaxed);
         const auto &R = bs.getSymOps()[iop];
         Vec3 fr{};
         for (int i = 0; i < 3; i++)
           fr[i] = R[i][0] * fOut[0] + R[i][1] * fOut[1] + R[i][2] * fOut[2];
+        // KERNEL-AWARE PLACEMENT WITHIN THE TET (ionized impurities). The row
+        // weight is the kernel INTEGRATED over the tet's iso-polygon, so the
+        // tet marginal is right; but placing k' uniformly on that polygon is
+        // not, because 1/(q^2+beta^2)^2 is peaked BELOW the tet scale whenever
+        // the screening length is comparable to a mesh cell (N_I = 1e17:
+        // 12.9 nm vs 7.7 nm on N48). Uniform placement in the tets around k
+        // inflates <q^2> per event ~2.3x and over-relaxes momentum; measured
+        // on the parabolic package against the exact BH+phonon mobility
+        // (595.3): Einstein 512-530, i.e. -12%. Rejection against the kernel
+        // with the TET-LOCAL bound f_max = 1/(q_min^2+beta^2)^2, re-proposing
+        // in the SAME tet on rejection, makes the within-tet density
+        // proportional to the kernel and leaves the tet marginal untouched.
+        // q is the minimum-image distance k' - k in the particle's frame.
+        if (m.coulombBeta2 > 0) {
+          const T b2 = m.coulombBeta2;
+          const Vec3 kf = bs.cartToFrac(kCart);
+          const std::int64_t par = bs.hasSubdivision() ? (id >> 3) : id;
+          const auto &tv = bs.getTetrahedra()[par];
+          const auto &P = bs.getPoints();
+          T qmin2 = std::numeric_limits<T>::max();
+          for (int v = 0; v < 4; v++) {
+            Vec3 pv{}, dv{};
+            for (int i = 0; i < 3; i++)
+              pv[i] = R[i][0] * P[tv[v]][0] + R[i][1] * P[tv[v]][1] + R[i][2] * P[tv[v]][2];
+            for (int i = 0; i < 3; i++) {
+              dv[i] = pv[i] - kf[i];
+              dv[i] -= std::round(dv[i]);
+            }
+            const Vec3 dc = bs.fracToCart(dv);
+            qmin2 = std::min(qmin2, dc[0]*dc[0] + dc[1]*dc[1] + dc[2]*dc[2]);
+          }
+          const T fmax = T(1) / ((qmin2 + b2) * (qmin2 + b2));
+          std::uniform_real_distribution<T> U01c(0, 1);
+          bool ok = false;
+          for (int rep = 0; rep < 256; rep++) {
+            Vec3 dq{};
+            for (int i = 0; i < 3; i++) {
+              dq[i] = fr[i] - kf[i];
+              dq[i] -= std::round(dq[i]);
+            }
+            const Vec3 dqc = bs.fracToCart(dq);
+            const T q2 = dqc[0]*dqc[0] + dqc[1]*dqc[1] + dqc[2]*dqc[2];
+            const T f = T(1) / ((q2 + b2) * (q2 + b2));
+            coulombTries.fetch_add(1, std::memory_order_relaxed);
+            if (U01c(rng) * fmax <= f) { ok = true; break; }
+            // re-propose in the SAME tet (keeps the row-weighted marginal)
+            if (!samplePointOnIsoFrac(id, energyFinal, rng, fOut, db)) break;
+            for (int i = 0; i < 3; i++)
+              fr[i] = R[i][0] * fOut[0] + R[i][1] * fOut[1] + R[i][2] * fOut[2];
+          }
+          if (!ok) coulombExhausted.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (bandOut) *bandOut = static_cast<int>(db);
+        g2Walk.fetch_add(trial > 0 ? 1 : 0, std::memory_order_relaxed);
+        g2WalkLen.fetch_add(static_cast<std::size_t>(trial),
+                            std::memory_order_relaxed);
         kOut = bs.fracToCart(fr);
         tetHint = -1; // rotated frame: let the locator re-seed
         g2Hits.fetch_add(1, std::memory_order_relaxed);
@@ -283,7 +532,7 @@ public:
         return dosVals[k - 1] + f * (dosVals[k] - dosVals[k - 1]);
       }
       const std::int64_t b = binOf(eAbs);
-      return b < 0 ? T(0) : bins[b].totalWeight / binW;
+      return b < 0 ? T(0) : bins[b].dos / binW;
     };
     auto binDos = dosOf;
 
@@ -415,7 +664,7 @@ public:
     T num = 0, den = 0;
     for (std::size_t i = 0; i < bins.size(); i++) {
       const T Ec = (static_cast<T>(i) + T(0.5)) * binW;
-      const T w = bins[i].totalWeight * std::exp(-Ec / kT);
+      const T w = bins[i].dos * std::exp(-Ec / kT);
       num += w * Ec;
       den += w;
     }
@@ -860,6 +1109,95 @@ private:
   /// highest destination band this engine can place a carrier in; SIZE_MAX
   /// means unrestricted. Set by the driver from ENGINE_NBANDS.
   std::size_t maxDestBand = SIZE_MAX;
+  mutable std::atomic<std::size_t> coulombTries{0}, coulombExhausted{0};
+  /// WP3d: one frame per stamped valley image of THIS band - its minimum
+  /// (cartesian) and M^{+1/2}, M^{-1/2} built from the stamped principal
+  /// masses and axes rotated to that image. Used by the Herring-Vogt
+  /// proposal in sampleFinalStateCoulomb.
+  struct ValleyFrame {
+    Vec3 kmin;
+    std::array<std::array<T, 3>, 3> mh, mih;
+  };
+  std::vector<std::vector<ValleyFrame>> valleysByBand;   // [package band]
+  std::vector<bool> isoByBand;
+
+  void buildValleyFrames() {
+    valleysByBand.assign(bs.getNrBands(), {});
+    isoByBand.assign(bs.getNrBands(), true);
+    for (std::size_t b = 0; b < static_cast<std::size_t>(bs.getNrBands()); b++)
+      buildValleyFramesFor(b);
+  }
+
+  void buildValleyFramesFor(std::size_t band) {
+    auto &valleys = valleysByBand[band];
+    valleys.clear();
+    const auto &ep = bs.edgePar;
+    if (!ep.hasStar) return;
+    const std::ptrdiff_t ip = ep.find(static_cast<std::int64_t>(band));
+    if (ip < 0) return;
+    const std::size_t I = static_cast<std::size_t>(ip);
+    const double *m = &ep.masses[I * 3];
+    if (!(m[0] > 0)) return;
+    isoByBand[band] = (m[2] / m[0] < 1.05);
+    std::array<Vec3, 3> ax0;
+    for (int i = 0; i < 3; i++)
+      for (int c = 0; c < 3; c++)
+        ax0[i][c] = static_cast<T>(ep.axes[I * 9 + i * 3 + c]);
+    Vec3 s0{};
+    for (int c = 0; c < 3; c++) s0[c] = static_cast<T>(ep.star[(I * ep.nvMax) * 3 + c]);
+    const auto &ops = bs.getSymOps();
+    for (std::size_t v = 0; v < ep.nvMax; v++) {
+      const double *sv = &ep.star[(I * ep.nvMax + v) * 3];
+      if (std::isnan(sv[0])) continue;
+      // the frac rotation carrying image 0 to image v (mod G); identity if none
+      std::array<std::array<T, 3>, 3> R{{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}};
+      for (const auto &op : ops) {
+        bool hit = true;
+        for (int i = 0; i < 3 && hit; i++) {
+          T x = op[i][0] * s0[0] + op[i][1] * s0[1] + op[i][2] * s0[2] - static_cast<T>(sv[i]);
+          x -= std::round(x);
+          if (std::abs(x) > 1e-5) hit = false;
+        }
+        if (hit) { R = op; break; }
+      }
+      ValleyFrame f{};
+      Vec3 fv{}; for (int c = 0; c < 3; c++) fv[c] = static_cast<T>(sv[c]);
+      f.kmin = bs.fracToCart(fv);
+      std::array<Vec3, 3> ax;
+      for (int i = 0; i < 3; i++) {
+        // a cartesian direction transforms as fracToCart(R * cartToFrac(e))
+        const Vec3 ef = bs.cartToFrac(ax0[i]);
+        Vec3 rf{};
+        for (int r = 0; r < 3; r++) rf[r] = R[r][0]*ef[0] + R[r][1]*ef[1] + R[r][2]*ef[2];
+        ax[i] = bs.fracToCart(rf);
+        const T n = std::sqrt(ax[i][0]*ax[i][0] + ax[i][1]*ax[i][1] + ax[i][2]*ax[i][2]);
+        for (int c = 0; c < 3; c++) ax[i][c] /= n;
+      }
+      for (int r = 0; r < 3; r++)
+        for (int c = 0; c < 3; c++) {
+          T h = 0, ih = 0;
+          for (int i = 0; i < 3; i++) {
+            const T sq = std::sqrt(static_cast<T>(m[i]));
+            h += sq * ax[i][r] * ax[i][c];
+            ih += ax[i][r] * ax[i][c] / sq;
+          }
+          f.mh[r][c] = h; f.mih[r][c] = ih;
+        }
+      valleys.push_back(f);
+    }
+  }
+
+  mutable std::atomic<std::size_t> coulombAnalytic{0}, coulombProposals{0},
+      coulombBracketFail{0}, coulombCapped{0}, coulombFallbacks{0};
+public:
+  std::size_t getCoulombTries() const { return coulombTries.load(); }
+  std::size_t getCoulombExhausted() const { return coulombExhausted.load(); }
+  std::size_t getCoulombAnalytic() const { return coulombAnalytic.load(); }
+  std::size_t getCoulombProposals() const { return coulombProposals.load(); }
+  std::size_t getCoulombBracketFail() const { return coulombBracketFail.load(); }
+  std::size_t getCoulombCapped() const { return coulombCapped.load(); }
+  std::size_t getCoulombFallbacks() const { return coulombFallbacks.load(); }
+private:
   mutable std::atomic<std::size_t> g2Rejected{0};
   /// true when the package carried per-source-band g2 rows (v0.4). False
   /// means every band is reading the band-0 rows, which is only correct for
@@ -890,7 +1228,7 @@ private:
     T acc = 0;
     for (std::size_t i = 0; i < bins.size(); i++) {
       const T Ec = binLo + (static_cast<T>(i) + T(0.5)) * binW;
-      acc += bins[i].totalWeight * std::exp(-(Ec - binLo) / kT);
+      acc += bins[i].dos * std::exp(-(Ec - binLo) / kT);
       thermCum[i] = acc;
     }
     thermKT = kT;
@@ -1066,7 +1404,9 @@ private:
   struct Bin {
     std::vector<std::int64_t> tets;
     std::vector<T> weights;
-    T totalWeight = 0;
+    T totalWeight = 0;   // sum of `weights`: the tet-SAMPLING normaliser
+    T dos = 0;           // the density the DOS consumers read - equals
+                         // totalWeight unless the band-edge patch replaced it
   };
   T binLo = 0, binW = 0;
   std::vector<Bin> bins;
@@ -1182,6 +1522,20 @@ private:
       H5Aread(at, H5T_NATIVE_DOUBLE, &dE);
       H5Aclose(at);
       m.deltaE = static_cast<T>(dE);
+      if (H5Aexists(mg, "beta_1_per_m") > 0) {
+        hid_t ab = H5Aopen(mg, "beta_1_per_m", H5P_DEFAULT);
+        double beta = 0;
+        H5Aread(ab, H5T_NATIVE_DOUBLE, &beta);
+        H5Aclose(ab);
+        m.coulombBeta2 = static_cast<T>(beta * beta);
+        if (H5Aexists(mg, "dest_band") > 0) {
+          hid_t ad = H5Aopen(mg, "dest_band", H5P_DEFAULT);
+          long long db = -1;
+          H5Aread(ad, H5T_NATIVE_LLONG, &db);
+          H5Aclose(ad);
+          if (db >= 0) m.coulombDestBand = static_cast<std::size_t>(db);
+        }
+      }
       // temperature index: nearest entry on the temperature grid
       std::vector<double> tg = read1D(mg, "temperature_grid");
       std::size_t ti = 0;
@@ -1410,6 +1764,306 @@ private:
         bins[b].totalWeight += w;
       }
     }
+    for (auto &bn : bins)
+      bn.dos = bn.totalWeight;
+    patchEdgeDos();
+  }
+
+  /*! \brief Replace the linear-tetrahedron DOS below E_sw by an analytic
+   * Kane form fitted to the mesh's own DOS above E_sw.
+   *
+   * WHY. Bands are interpolated LINEARLY inside each tetrahedron, and a linear
+   * function has no interior minimum: the tet containing the true band
+   * minimum has all four vertices ABOVE it, so the interpolated DOS is
+   * deficient - zero below the lowest vertex, then low by O((dk)^2 x
+   * curvature). Measured on Si REFINE=6: 0.59 of parabolic at 10 meV, 0.77 at
+   * 20; REFINE=12 reaches 0.87 / 0.90. The consequence is not cosmetic: the
+   * equilibrium sits HOT at any field (<E> = 0.0446 eV at 25 V/cm against
+   * 1.5kT = 0.0388), every ensemble average inherits it, and the fix by mesh
+   * alone costs a 10-33 h table rebuild per attempt because the scattering
+   * tables are indexed by mesh state.
+   *
+   * This is the field's standard remedy - analytic band edge, full band above
+   * (Fischetti-Laux lineage; Jacoboni-Reggiani) - applied to the DOS only. It
+   * is the region where a mass tensor plus Kane non-parabolicity is exact to
+   * a few percent and a linear mesh is worst, so it is the right region to be
+   * analytic in. The form is A * sqrt(x(1+ax)) * (1+2ax), the Kane DOS with x
+   * measured from the band minimum, and BOTH A and alpha are fitted to this
+   * instance's own bins on [E_sw, E_hi]: A absorbs the mesh's volume units
+   * and the valley count, alpha the curvature. Nothing is imported - the gate
+   * docstring records that silicon's alpha is NOT 1/Eg, so a formula would be
+   * a fit in disguise.
+   *
+   * WHAT IT DOES NOT DO. Final states are still placed on the linear-tet
+   * iso-surface; bins with no straddling tet stay empty (the sampler's
+   * tets.empty() guard makes that safe) and the analytic weight that lands in
+   * them is reported as `unsampleable`. Placing k' analytically below E_sw is
+   * the next stage.
+   *
+   * VALIDATION IS EXTERNAL OR IT IS NOTHING. Enforcing balance against ANY
+   * density makes the stationary distribution D(E)exp(-E/kT), so the
+   * bin-implied equilibrium landing on 1.5kT proves nothing - see
+   * enforceDetailedBalance. The checks that count: the parabolic test
+   * packages, whose exact DOS is sqrt(E), and mesh-independence.
+   *
+   * EDGE_PATCH=0 disables (A/B). EDGE_SW [eV] switch energy (default 0.05),
+   * EDGE_FIT_HI [eV] top of the fit window (default 0.15).
+   */
+  /*! \brief Carry the corrected edge DOS into the RATES - the only place mode 0
+   * reads it.
+   *
+   * The equilibrium is set by the dynamics, and the dynamics read
+   * Gamma_m(E) x a(k) (phaseA grid x phaseB anisotropy). Both were integrated
+   * by the converter with the same linear-tetrahedron DOS at the FINAL state,
+   * so transitions INTO the band edge are under-counted by exactly the deficit
+   * the DOS patch measures: emission into an edge bin is too rare, the edge is
+   * under-populated, the ensemble sits hot. Rescaling Gamma_m(E) by
+   * r(E + dE_m) = dos/totalWeight of the FINAL bin fixes that at its source:
+   * emission into the edge gets the analytic DOS, absorption out of it (final
+   * states higher up, on a trusted mesh) is untouched, and the em/abs ratio at
+   * an edge pair becomes D_an(E - hw)/D_mesh(E) - the correct one. The
+   * anisotropy factor a(k) = Gamma_B/Gamma_A(E) is a ratio and needs no
+   * change. The g2 rows need none either: E' fixes the bin, and all of a row's
+   * tets share it, so r cancels within the row.
+   *
+   * Measured before this existed (2026-09-02): the DOS-only patch moved the
+   * bin-implied equilibrium 0.0439 -> 0.0408 on Si REFINE=6 and the ENSEMBLE
+   * not at all (0.0450 -> 0.0450), with or without BALANCE=1 - which
+   * rebalances the phaseA tables mode 0 does not use, and stays off (PLAN).
+   *
+   * Interband rows: the final state of a cross-band mechanism sits on ANOTHER
+   * band's edge; this uses the source instance's bins, i.e. it assumes the
+   * intraband part dominates Gamma_m(E). EDGE_RATES=0 disables (A/B against
+   * DOS-only).
+   */
+  void rescaleRatesToEdgeDos() {
+    const char *er = std::getenv("EDGE_RATES");
+    if (er && std::atoi(er) == 0) {
+      std::printf("# band %zu: edge-DOS rate rescale OFF (EDGE_RATES=0)\n", bandIdx);
+      return;
+    }
+    std::size_t nTouched = 0;
+    double rMin = 1e300, rMax = 0;
+    for (auto &m : mechanisms) {
+      for (std::size_t i = 0; i < m.grid.size() && i < m.rates.size(); i++) {
+        const std::int64_t b = binOf(m.grid[i] + m.deltaE);
+        if (b < 0) continue;
+        const auto &bn = bins[b];
+        if (bn.totalWeight <= 0 || bn.dos <= 0 || bn.dos == bn.totalWeight)
+          continue;
+        const double r = static_cast<double>(bn.dos / bn.totalWeight);
+        m.rates[i] *= static_cast<T>(r);
+        nTouched++;
+        rMin = std::min(rMin, r); rMax = std::max(rMax, r);
+      }
+    }
+    if (nTouched)
+      std::printf("# band %zu: edge-DOS rate rescale: %zu grid entries across %zu "
+                  "mechanism(s) scaled by r(E_final) in [%.3f, %.3f]\n",
+                  bandIdx, nTouched, mechanisms.size(), rMin, rMax);
+    else
+      std::printf("# band %zu: edge-DOS rate rescale: nothing to do\n", bandIdx);
+  }
+
+  void patchEdgeDos() {
+    // OFF BY DEFAULT. What is actually measured (2026-09-02):
+    //   pv_A1 N72, 20000 x 8, exact mu = e tau/m* = 674.9:
+    //     unpatched 665.0 +/- 19.5, DOS-only 683.6 +/- 16.0 - both within 1
+    //     sigma of exact; <E> 0.0397 -> 0.0390 toward the exact 0.0388. The
+    //     DOS-only patch is correct and harmless there. (Earlier 8000 x 4 runs
+    //     read 767/817 and were replica noise - the 4-replica SE is ~2x
+    //     optimistic, see the driver.)
+    //   Si REFINE=6, 8000 x 4: DOS-only leaves the ensemble untouched (0.0450,
+    //     mode 0 never reads bins[].dos); DOS+RATES cools it 0.0450 -> 0.0407
+    //     as designed but moves mu 1348 -> 1586 with rate factors of 9-35x in
+    //     the near-empty lowest bins - multiplying the rate INTO a bin whose
+    //     one or two tets place k' on the chord's iso-surface (the linear
+    //     interpolant overestimates E by 1.5-1.7x below 10 meV on this mesh)
+    //     amplifies the placement error. The rate rescale must not run
+    //     without analytic placement.
+    // Vertex velocities are EXACT (0.00% vs the tensor on pv); the interpolant
+    // errors are in E(k) and hence in placement and binning, not in v.
+    // EDGE_PATCH=1 opts in (DOS-only unless EDGE_RATES=1) for development of
+    // the full hybrid (analytic E, placement, DOS below E_sw).
+    const char *ep = std::getenv("EDGE_PATCH");
+    if (!ep || std::atoi(ep) == 0) {
+      if (ep)
+        std::printf("# band %zu: band-edge DOS patch OFF (EDGE_PATCH=0)\n",
+                    bandIdx);
+      return;
+    }
+    const double eSw = std::getenv("EDGE_SW") ? std::atof(std::getenv("EDGE_SW"))
+                                              : 0.05;
+    const double eHi = std::getenv("EDGE_FIT_HI")
+                           ? std::atof(std::getenv("EDGE_FIT_HI")) : 0.15;
+    auto kane = [](double x, double a) {
+      return std::sqrt(x * (1 + a * x)) * (1 + 2 * a * x);
+    };
+    // ---- MASS-ANCHORED FORM (preferred) ---------------------------------
+    // The converter stamps m_d, nv, e0 per band from a quadratic fit to E(k)
+    // at MESH POINTS - exact Wannier energies, so immune to the very
+    // linear-tetrahedron deficit being corrected. That pins the AMPLITUDE
+    // absolutely: the fractional BZ volume below x is
+    //     nv * (4 pi / 3) * k(x)^3 / |det B|,   k(x) = sqrt(2 m_d m_e x e)/hbar
+    // and the bins are in fractional volume (vfrac), so no unit fit is
+    // needed. Only the Kane alpha is fitted, on [E_sw, E_hi]; a one-parameter
+    // fit with a pinned amplitude survives a +/-15% wiggly window that a
+    // two-parameter shape fit did not (it extrapolated alpha = 2.0 on Si
+    // REFINE=6 and REDUCED the edge DOS - see the shape-fit fallback below).
+    const std::ptrdiff_t ip = bs.edgePar.has
+                                  ? bs.edgePar.find(static_cast<std::int64_t>(bandIdx))
+                                  : -1;
+    if (ip >= 0) {
+      const double mD = bs.edgePar.mD[ip];
+      const double nv = static_cast<double>(bs.edgePar.nv[ip]);
+      // |det B| from the band structure's own frac->cart map
+      const Vec3 b1 = bs.fracToCart(Vec3{1, 0, 0}), b2 = bs.fracToCart(Vec3{0, 1, 0}),
+                 b3 = bs.fracToCart(Vec3{0, 0, 1});
+      const double detB = std::abs(
+          b1[0] * (b2[1] * b3[2] - b2[2] * b3[1]) -
+          b1[1] * (b2[0] * b3[2] - b2[2] * b3[0]) +
+          b1[2] * (b2[0] * b3[1] - b2[1] * b3[0]));
+      constexpr double ME = 9.1093837015e-31, QE = 1.602176634e-19,
+                       HBAR = 1.054571817e-34;
+      // fractional volume of the Kane band below x (from THIS band's minimum)
+      auto volBelow = [&](double x, double al) {
+        if (x <= 0) return 0.0;
+        const double g = x * (1 + al * x);                 // Kane: E(1+aE)
+        const double k = std::sqrt(2 * mD * ME * g * QE) / HBAR;
+        return nv * (4.0 * M_PI / 3.0) * k * k * k / detB;
+      };
+      // alpha only: least-squares on the trusted window with A pinned
+      std::vector<std::size_t> win;
+      for (std::size_t i = 0; i < bins.size(); i++) {
+        const double x = (static_cast<double>(i) + 0.5) * binW;
+        if (x >= eSw && x <= eHi && bins[i].totalWeight > 0) win.push_back(i);
+      }
+      double bestAl = 0, bestRes = std::numeric_limits<double>::max();
+      double ymean = 0;
+      for (auto i : win) ymean += bins[i].totalWeight;
+      ymean = win.empty() ? 1 : ymean / win.size();
+      if (win.size() >= 8) {
+        for (int ia = 0; ia <= 80; ia++) {
+          const double al = 0.05 * ia;
+          double res = 0;
+          for (auto i : win) {
+            const double xl = i * binW, xh = xl + binW;
+            const double d = bins[i].totalWeight - (volBelow(xh, al) - volBelow(xl, al));
+            res += d * d;
+          }
+          if (res < bestRes) { bestRes = res; bestAl = al; }
+        }
+      }
+      const double rms = win.size() >= 8 ? std::sqrt(bestRes / win.size()) / ymean : -1;
+      // HEALTH CHECK, not a fit: mesh/analytic on the trusted window. Far
+      // from 1 means a wrong mass stamp, a wrong valley count, or a units
+      // slip - all of which this line makes visible.
+      double meshWin = 0, anWin = 0;
+      for (auto i : win) {
+        meshWin += bins[i].totalWeight;
+        anWin += volBelow((i + 1) * binW, bestAl) - volBelow(i * binW, bestAl);
+      }
+      // GUARD. The analytic form is only usable if it agrees with the mesh
+      // where the mesh is trusted. A ratio far from 1 means the stamp does
+      // not describe this edge: Si conduction band 1 (a 137 meV feature that
+      // is not a parabolic valley) read 0.446, and the sorted branches of the
+      // warped degenerate valence manifold read 0.447 / 0.570 - a per-branch
+      // parabola over-counts the heavy branch 2x. Patching on those numbers
+      // over-corrected the hole equilibrium to 0.0314 eV. Leave such a band
+      // on the mesh DOS and say so.
+      const double health = anWin > 0 ? meshWin / anWin : 0.0;
+      if (health < 0.8 || health > 1.25) {
+        std::printf("# band %zu: band-edge DOS patch NOT APPLIED - the stamped "
+                    "parabola (m_d = %.4f m_e, nv = %.0f) disagrees with the "
+                    "mesh on [%.0f, %.0f] meV: mesh/analytic = %.3f. This "
+                    "edge is not a parabolic valley (degenerate or warped "
+                    "manifold, or not a minimum); it keeps the mesh DOS.\n",
+                    bandIdx, mD, nv, eSw * 1e3, eHi * 1e3, health);
+        return;
+      }
+      double meshBelow = 0, anBelow = 0, unsampleable = 0;
+      std::size_t nPatched = 0;
+      for (std::size_t i = 0; i < bins.size(); i++) {
+        const double xl = i * binW, xh = xl + binW;
+        if (xl + 0.5 * binW >= eSw) break;
+        const double an = volBelow(xh, bestAl) - volBelow(xl, bestAl);
+        meshBelow += bins[i].totalWeight;
+        anBelow += an;
+        if (bins[i].tets.empty()) { unsampleable += an; continue; }
+        bins[i].dos = static_cast<T>(an);
+        nPatched++;
+      }
+      std::printf("# band %zu: band-edge DOS patch (MASS-ANCHORED, m_d = %.4f m_e, "
+                  "nv = %.0f) below %.0f meV: Kane alpha = %.2f 1/eV (rms %.1f%% on "
+                  "[%.0f, %.0f] meV), mesh/analytic on that window = %.3f; %zu "
+                  "bins patched, mesh held %.1f%% of the analytic weight below, "
+                  "%.2f%% unsampleable\n",
+                  bandIdx, mD, nv, eSw * 1e3, bestAl, 100 * rms, eSw * 1e3,
+                  eHi * 1e3, anWin > 0 ? meshWin / anWin : 0.0, nPatched,
+                  anBelow > 0 ? 100 * meshBelow / anBelow : 0.0,
+                  anBelow > 0 ? 100 * unsampleable / anBelow : 0.0);
+      rescaleRatesToEdgeDos();
+      return;
+    }
+    // ---- SHAPE-FIT FALLBACK (no stamps) ---------------------------------
+    // Fits BOTH A and alpha to the mesh DOS on [E_sw, E_hi]. Proven on the
+    // smooth single-valley parabolic packages (N24: <E> 0.0442 -> 0.0394 vs
+    // exact 0.0388); NOT trustworthy on a real material's coarse mesh.
+    std::vector<double> xs, ys;
+    for (std::size_t i = 0; i < bins.size(); i++) {
+      const double x = (static_cast<double>(i) + 0.5) * binW;
+      if (x >= eSw && x <= eHi && bins[i].totalWeight > 0) {
+        xs.push_back(x);
+        ys.push_back(static_cast<double>(bins[i].totalWeight));
+      }
+    }
+    if (xs.size() < 8) {
+      std::printf("# band %zu: band-edge DOS patch SKIPPED - only %zu bins in "
+                  "[%.3f, %.3f] eV\n", bandIdx, xs.size(), eSw, eHi);
+      return;
+    }
+    // alpha by scan, A by linear least squares at each alpha
+    double bestA = 0, bestAl = 0, bestRes = std::numeric_limits<double>::max();
+    for (int ia = 0; ia <= 80; ia++) {
+      const double al = 0.05 * ia;                      // 0 .. 4 1/eV
+      double sgg = 0, syg = 0;
+      for (std::size_t i = 0; i < xs.size(); i++) {
+        const double g = kane(xs[i], al);
+        sgg += g * g; syg += ys[i] * g;
+      }
+      const double A = sgg > 0 ? syg / sgg : 0;
+      double res = 0;
+      for (std::size_t i = 0; i < xs.size(); i++) {
+        const double d = ys[i] - A * kane(xs[i], al);
+        res += d * d;
+      }
+      if (res < bestRes) { bestRes = res; bestA = A; bestAl = al; }
+    }
+    double ymean = 0;
+    for (double y : ys) ymean += y;
+    ymean /= ys.size();
+    const double rms = std::sqrt(bestRes / xs.size()) / ymean;
+    // apply below E_sw
+    double meshBelow = 0, anBelow = 0, unsampleable = 0;
+    std::size_t nPatched = 0;
+    for (std::size_t i = 0; i < bins.size(); i++) {
+      const double x = (static_cast<double>(i) + 0.5) * binW;
+      if (x >= eSw) break;
+      const double an = bestA * kane(x, bestAl);
+      meshBelow += bins[i].totalWeight;
+      anBelow += an;
+      if (bins[i].tets.empty()) { unsampleable += an; continue; }
+      bins[i].dos = static_cast<T>(an);
+      nPatched++;
+    }
+    std::printf("# band %zu: band-edge DOS patch (SHAPE-FIT fallback, no stamps) below %.0f meV: Kane alpha = "
+                "%.2f 1/eV, fit rms %.1f%% on [%.0f, %.0f] meV; %zu bins "
+                "patched, mesh held %.1f%% of the analytic weight there, "
+                "%.2f%% unsampleable (bins with no tet)\n",
+                bandIdx, eSw * 1e3, bestAl, 100 * rms, eSw * 1e3, eHi * 1e3,
+                nPatched, anBelow > 0 ? 100 * meshBelow / anBelow : 0.0,
+                anBelow > 0 ? 100 * unsampleable / anBelow : 0.0);
+    rescaleRatesToEdgeDos();
   }
 };
 
