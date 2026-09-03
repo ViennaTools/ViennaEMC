@@ -135,6 +135,27 @@ public:
     return static_cast<T>(std::norm(acc));
   }
 
+  /*! \brief Overlap averaged over the near-degenerate groups at BOTH points:
+   * invariant under any rotation inside either group. A per-branch overlap
+   * from mesh-vertex eigenvectors is gauge noise wherever branches are close
+   * (Si valence, no SOC: median 0.33-0.50 at <2 meV separation), and no
+   * globally smooth gauge exists around a degeneracy line. This is the
+   * standard MC treatment: degenerate destination branches split equally. */
+  T overlapGroup(std::int64_t ip, std::size_t n, std::int64_t jp, std::size_t n2,
+                 T eps = T(0.010)) const {
+    if (!hasGauge || n >= gaugeNb || n2 >= gaugeNb) return T(1);
+    const std::size_t nb = gaugeNb;
+    T acc = 0; std::size_t cnt = 0;
+    for (std::size_t m = 0; m < nb; m++) {
+      if (std::abs(energies[m][ip] - energies[n][ip]) >= eps) continue;
+      for (std::size_t m2 = 0; m2 < nb; m2++) {
+        if (std::abs(energies[m2][jp] - energies[n2][jp]) >= eps) continue;
+        acc += overlap(ip, m, jp, m2); cnt++;
+      }
+    }
+    return cnt ? acc / static_cast<T>(cnt) : T(1);
+  }
+
   /// dominant vertex (mesh point index) of the tet containing kCart, or -1
   std::int64_t nearestVertex(const Vec3 &kCart, std::int64_t &hint) const {
     Vec3 lam;

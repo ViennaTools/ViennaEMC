@@ -252,7 +252,7 @@ public:
       if (vSrc >= 0) {
         std::int64_t hd = h;
         const std::int64_t vDst = bs.nearestVertex(kp, hd);
-        if (vDst >= 0) I = bs.overlap(vSrc, bandIdx, vDst, nd);
+        if (vDst >= 0) I = bs.overlapGroup(vSrc, bandIdx, vDst, nd);
       }
       const T w = ratio * ratio * jac * I;
       if (w > wcap) coulombCapped.fetch_add(1, std::memory_order_relaxed);
@@ -660,6 +660,19 @@ public:
   /// DOS quadrature computed some other way (tet means, vertex integrals,
   /// point sums) compares two different discretisations, not the engine
   /// against the truth.
+  /// Boltzmann weight of this band's occupiable states, sum_bins dos x exp(-E/kT):
+  /// the relative population a THERMAL ensemble puts on this band. Used by the
+  /// driver to draw each particle's initial band - every particle used to start
+  /// in band 0, which for a degenerate valence manifold is the heavy branch alone.
+  T thermalWeight(T kT) const {
+    T z = 0;
+    for (std::size_t i = 0; i < bins.size(); i++) {
+      const T Ec = binLo + (static_cast<T>(i) + T(0.5)) * binW;   // absolute
+      z += bins[i].dos * std::exp(-(Ec - bs.getBandMinimum(0)) / kT);
+    }
+    return z;
+  }
+
   T equilibriumEnergy(T kT) const {
     T num = 0, den = 0;
     for (std::size_t i = 0; i < bins.size(); i++) {

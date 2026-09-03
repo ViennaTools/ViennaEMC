@@ -61,7 +61,12 @@ int main(int argc, char **argv) {
   // at the default 2000 x 20 ps, which hides every few-percent effect.
   const int nPart = argc > 5 ? std::stoi(argv[5]) : 2000;
   const int nRep = argc > 6 ? std::stoi(argv[6]) : 1;
-  const double tTotal = 20e-12, tTransient = 5e-12;
+  // T_TOTAL / T_TRANSIENT [ps] override the run length: a degenerate valence
+  // manifold relaxes its BRANCH populations only through interbranch
+  // channels, and 20 ps may not reach the DOS-thermal split (Si valence at
+  // 300 K: 82.4 / 14.8 / 2.7% on the package mesh).
+  const double tTotal = (std::getenv("T_TOTAL") ? std::atof(std::getenv("T_TOTAL")) : 20.0) * 1e-12;
+  const double tTransient = (std::getenv("T_TRANSIENT") ? std::atof(std::getenv("T_TRANSIENT")) : 5.0) * 1e-12;
 
   NBS bs(pkg);
   // QUADE=0 disables the quadratic energy interpolation (A/B testing)
@@ -304,11 +309,34 @@ int main(int argc, char **argv) {
       int is = 0;          // next MSD checkpoint to record
     };
     std::vector<P> ps(nPart);
+    // INITIAL BAND drawn from each band's thermal weight. Every particle used
+    // to start in band 0 (P::band defaults to 0 and nothing set it). For
+    // electrons that is the CBM band and harmless; for a degenerate valence
+    // manifold it is the heavy branch alone, and the ensemble then relaxes
+    // through the interbranch channels for the whole run - Si holes at 300 K
+    // sat at 44/34/22% after 20 ps against a DOS-thermal 82/15/3%, i.e. the
+    // light branches over-populated 2-8x, which inflates mu_h. INIT_BAND=0
+    // restores the old behaviour for A/B.
+    std::vector<double> zb(scatBand.size(), 0.0);
+    double ztot = 0;
+    for (std::size_t b = 0; b < scatBand.size(); b++) { zb[b] = scatBand[b]->thermalWeight(KB * T); ztot += zb[b]; }
+    const bool initBandThermal = !(std::getenv("INIT_BAND") && std::atoi(std::getenv("INIT_BAND")) == 0);
     for (auto &p : ps) {
+      if (initBandThermal && scatBand.size() > 1 && ztot > 0) {
+        double u = U01(rng) * ztot, acc = 0;
+        p.band = 0;
+        for (std::size_t b = 0; b < scatBand.size(); b++) { acc += zb[b]; if (u <= acc) { p.band = static_cast<int>(b); break; } }
+      }
+      FBS &si = *scatBand[p.band < (int)scatBand.size() ? p.band : 0];
       double E;
       do
-        E = scat.sampleThermalEnergy(KB * T, rng);   // DOS-weighted, not bare
-      while (!scat.sampleFinalState(E, rng, p.k, p.hint));
+        E = si.sampleThermalEnergy(KB * T, rng);   // DOS-weighted, not bare
+      while (!si.sampleFinalState(E, rng, p.k, p.hint));
+    }
+    if (rep == 0 && scatBand.size() > 1) {
+      std::printf("# initial band split (thermal weights):");
+      for (std::size_t b = 0; b < scatBand.size(); b++) std::printf(" b%zu=%.1f%%", b, ztot > 0 ? 100 * zb[b] / ztot : 0.0);
+      std::printf("%s\n", initBandThermal ? "" : "   [INIT_BAND=0: all particles start in band 0]");
     }
 
     // The time-weighted moments - drift velocity, <E>, <v^2>, the SERTA
