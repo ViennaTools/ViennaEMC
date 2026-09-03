@@ -8,6 +8,7 @@
  *
  * Output: time-averaged drift velocity, mobility and mean energy per field.
  */
+#include <Averages/emcBulkAverages.hpp>
 #include <FullBand/emcFullBandScattering.hpp>
 #include <FullBand/emcNumericBandStructure.hpp>
 
@@ -74,10 +75,26 @@ int main(int argc, char **argv) {
   // CARRIER: a hole package stores E = VBM - E_electron, so its carriers drift
   // WITH the field. Everything else in the engine is carrier-agnostic because
   // the flipped axis still has a MINIMUM; only the drift sign differs.
-  const double carrierSign = packageIsHole(pkg) ? -1.0 : 1.0;
-  if (carrierSign < 0)
-    std::printf("# HOLE package: carriers drift WITH the field; mobility sign "
-                "flipped accordingly\n");
+  // NO SIGN FLIP FOR HOLES, and this is the representation's doing rather than
+  // an oversight. The flipped axis (E_h = VBM - E_e) with NEGATED velocities
+  // turns a hole into a formal ELECTRON on the inverted band: same charge sign
+  // in the equation of motion the engine integrates, same v = grad(E)/hbar on
+  // the stored field. Its k-trajectory is the mirror of the physical hole's,
+  // so the drift it measures is MINUS the physical drift, and mu = -vd/F
+  // recovers the correct POSITIVE mobility for both carriers.
+  //
+  // A `carrierSign = -1` flip was added on 2026-08-31 on the strength of
+  // "measured vd = +3.19e3 m/s, so holes drift WITH the field". That number
+  // came from the results column below, which printed `-mu * F * 1e-4` - the
+  // mobility back-converted, NOT the drift velocity, and already sign-flipped
+  // for a hole package. The flip therefore double-counted a sign the
+  // representation had handled, and turned mu_h = +534 into -534. The column
+  // now prints the true drift velocity so the mistake is not reachable again.
+  const double carrierSign = 1.0;
+  if (packageIsHole(pkg))
+    std::printf("# HOLE package: flipped axis (E = VBM - E_e), velocities "
+                "negated at build time; the carrier is a formal electron on "
+                "the inverted band, so mu = -vd/F unchanged\n");
   const int mode = argc > 3 ? std::stoi(argv[3]) : 0;  // 0 auto, 1 phaseA, 2 no-g2
   // BINW: final-state energy bin width [eV]. The inelastic step hbar*omega
   // must be resolved by these bins; when it is comparable to the bin width
@@ -97,8 +114,24 @@ int main(int argc, char **argv) {
   // reads it, and a band-1 particle is propagated on band-0 physics - useful
   // for exercising the machinery, meaningless as a transport number. The
   // engine cannot tell these apart silently, so it says which it got.
+  // DEFAULTS TO THE PACKAGE'S BAND COUNT, not to 1.
+  //
+  // It used to default to 1, which silently made EVERY run a no-interband
+  // control: with maxDestBand = 0 the sampler rejects every draw whose
+  // dest_band is not 0 and redraws, so |g|^2 is restricted to intraband
+  // destinations. On a two-band electron package that is nearly harmless -
+  // band 1 sits 136.7 meV above the edge and is under 1% occupied at 500 V/cm.
+  // On silicon's three-fold DEGENERATE valence manifold, where every band
+  // touches the edge, it discards most of the available final states: a run on
+  // 2026-09-02 rejected 147k draws and was read as a hole-transport defect.
+  // The engine printed a NOTE saying so; a default nobody has to read is
+  // better than a warning everybody must.
+  //
+  // ENGINE_NBANDS=1 remains the deliberate no-interband CONTROL.
   const int engineNBands =
-      std::getenv("ENGINE_NBANDS") ? std::atoi(std::getenv("ENGINE_NBANDS")) : 1;
+      std::getenv("ENGINE_NBANDS")
+          ? std::atoi(std::getenv("ENGINE_NBANDS"))
+          : static_cast<int>(bs.getNrBands());
   // Interband bookkeeping. Time-weighted occupancy is the number that matters
   // - an event count says transfers happen, occupancy says whether the two
   // bands reach a steady split, which is what Gamma->L transfer in GaAs will
@@ -210,7 +243,7 @@ int main(int argc, char **argv) {
   // one independent replica -> (mu, <E>, selfscat%)
   static constexpr int EHIST_N = 150;
   static constexpr double EHIST_DE = 0.002;   // 2 meV bins to 0.30 eV
-  struct Res { double mu, energy, self, cosTheta, retention, speedRatio, failFrac, accel, v2, muEns;
+  struct Res { double mu, vd, energy, self, cosTheta, retention, speedRatio, failFrac, accel, v2, muEns;
                double gTab, gReal, dEmean, dEmax; std::vector<double> hist; };
   // DTCAP_SCALE: test knob. The flight cap must be physically INERT - it
   // only chops the trajectory more finely, it does not change the trajectory
@@ -263,17 +296,21 @@ int main(int argc, char **argv) {
       while (!scat.sampleFinalState(E, rng, p.k, p.hint));
     }
 
-    double sumVdt = 0, sumEdt = 0, sumT = 0, sumV2dt = 0, sumV2G = 0;
-    // Realized vs tabulated scattering rate. The self-scattering scheme makes
-    // real events occur at rate Gamma(k); if the rate the ensemble ACTUALLY
-    // experiences differs from the time-average of the table, the dynamics is
-    // inconsistent with the rates the SERTA integral is reading.
-    double sumGdt = 0;
+    // The time-weighted moments - drift velocity, <E>, <v^2>, the SERTA
+    // integrand <v^2/Gamma>, <Gamma> and the energy histogram - all live in
+    // emcBulkAverages now rather than as loose accumulators here. They used to
+    // be six private sums plus a hand-rolled histogram, which is why every new
+    // bulk observable meant editing this example.
+    //
+    // The histogram is part of it: <E> alone cannot distinguish "thermal on
+    // the wrong DOS" from "non-thermal", since both can give the same mean.
+    // The shape does. <Gamma> is carried for the same reason - the
+    // self-scattering scheme makes real events occur at rate Gamma(k), so if
+    // the rate the ensemble ACTUALLY experiences differs from the time average
+    // of the table, the dynamics is inconsistent with the rates the SERTA
+    // integral reads.
+    emcBulkAverages<double> avg(1, EHIST_N, EHIST_DE);
     long nRealAcc = 0;
-    // Time-weighted histogram of E-CBM. <E> alone cannot distinguish "thermal
-    // on the wrong DOS" from "non-thermal": both can give the same mean. The
-    // shape does.
-    std::vector<double> hist(EHIST_N, 0.0);
     // PER-EVENT ENERGY CONSERVATION. The final state is sampled on the
     // iso-surface of the SAME band field the engine walks on, so
     // E(k_new) must equal the requested E' exactly. Any residual here is
@@ -361,27 +398,15 @@ int main(int argc, char **argv) {
           const double vMid = 0.5 * ((vCur[0] + vEnd[0]) * dir[0] +
                                      (vCur[1] + vEnd[1]) * dir[1] +
                                      (vCur[2] + vEnd[2]) * dir[2]);
-          sumVdt += vMid * w;
-          sumEdt += (bs.getEnergy(p.k, p.band, p.hint) - cbm) * w;
           // <v^2>: if the final-state sampler's measure were biased, the
           // ensemble would sit on states with the wrong velocity statistics
           // and mu would deviate from the Boltzmann/SERTA integral even with
-          // identical rates and full momentum randomisation
+          // identical rates and full momentum randomisation. It is evaluated
+          // at vCur, the point gStart was paired with, while the energy is
+          // taken AFTER the k-update - the pairing this loop has always used.
           const double v2c = vCur[0]*vCur[0] + vCur[1]*vCur[1] + vCur[2]*vCur[2];
-          sumV2dt += v2c * w;
-          // SERTA integrand on the MC's own ensemble: mu = e<v^2/Gamma>/(3kT).
-          // Same states, same rates, no drift estimator involved.
-          {
-            const double gg = gStart;   // paired with vCur, same point
-            if (gg > 0) sumV2G += v2c / gg * w;
-            sumGdt += gg * w;
-          }
-          {
-            const int hb = static_cast<int>((bs.getEnergy(p.k, p.band, p.hint) - cbm)
-                                            / EHIST_DE);
-            if (hb >= 0 && hb < EHIST_N) hist[hb] += w;
-          }
-          sumT += w;
+          avg.addSample(vMid, bs.getEnergy(p.k, p.band, p.hint) - cbm,
+                        v2c, gStart, w);
           if (p.band < 8)
             bandFs[p.band].fetch_add(static_cast<long>(w * 1e15),
                                      std::memory_order_relaxed);
@@ -475,26 +500,28 @@ int main(int argc, char **argv) {
         }
       }
     }
-    const double vd = sumVdt / sumT;
+    // Sign, unit scaling and the SERTA integrand are emcBulkAverages' job now,
+    // so a second caller cannot re-derive one of them slightly differently.
     // Sign convention by CARRIER. Electrons drift AGAINST F, so -vd/F is
     // positive for them. A HOLE package stores a flipped axis (E = VBM - E_e)
     // and its carriers drift WITH F - measured vd = +3.19e3 m/s at 200 V/cm
     // once the stored velocities were corrected - so the same formula would
     // report a negative mobility. `carrierSign` is +1 for electrons, -1 for
     // holes, read from the package's /bands/electron carrier attribute.
-    return Res{-carrierSign * vd / F * 1e4,   // cm^2/Vs
-               sumEdt / sumT,
+    return Res{avg.getMobility(F, carrierSign),          // cm^2/Vs
+               avg.getDriftVelocity(),                  // m/s, AS MEASURED
+               avg.getMeanEnergy(),
                100.0 * nSelf / std::max(1L, nSelf + nReal),
                cosN ? cosAcc / cosN : 0.0,
                vpre2Acc > 0 ? projAcc / vpre2Acc : 0.0,
                cosN ? spdAcc / cosN : 0.0,
                100.0 * nFail / std::max(1L, nReal),
                dtAcc > 0 ? dvAcc / dtAcc : 0.0,
-               sumV2dt / sumT,
-               sumV2G / sumT / (3.0 * KB * T) * 1e4,
-               sumGdt / sumT,
+               avg.getMeanSquaredVelocity(),
+               avg.getMobilitySERTA(KB * T),
+               avg.getMeanScatterRate(),
                nRealAcc / (nPart * (tTotal - tTransient)),
-               dEn ? dEsum / dEn : 0.0, dEmax, hist};
+               dEn ? dEsum / dEn : 0.0, dEmax, avg.getEnergyHistogram()};
   };
 
   const unsigned nThreads = std::min<unsigned>(
@@ -517,19 +544,20 @@ int main(int argc, char **argv) {
       th.join();
 
     double muM = 0, eM = 0, sM = 0, cM = 0, fM = 0, aM = 0, v2M = 0, meM = 0;
+    double vdM = 0;   // measured, not back-converted from mu
 
     double retM = 0, spdM = 0;
     double gtM = 0, grM = 0, deM = 0, dxM = 0;
     std::vector<double> hAcc(EHIST_N, 0.0);
     for (const auto &r : res) {
-      muM += r.mu; eM += r.energy; sM += r.self; cM += r.cosTheta;
+      muM += r.mu; vdM += r.vd; eM += r.energy; sM += r.self; cM += r.cosTheta;
       retM += r.retention; spdM += r.speedRatio;
       fM += r.failFrac; aM += r.accel; v2M += r.v2; meM += r.muEns;
       gtM += r.gTab; grM += r.gReal; deM += r.dEmean;
       for (int i = 0; i < EHIST_N; i++) hAcc[i] += r.hist[i];
       if (r.dEmax > dxM) dxM = r.dEmax;
     }
-    muM /= nRep; eM /= nRep; sM /= nRep; cM /= nRep; fM /= nRep; aM /= nRep;
+    muM /= nRep; vdM /= nRep; eM /= nRep; sM /= nRep; cM /= nRep; fM /= nRep; aM /= nRep;
     retM /= nRep; spdM /= nRep;
     v2M /= nRep; meM /= nRep; gtM /= nRep; grM /= nRep; deM /= nRep;
     double se = 0;
@@ -543,7 +571,11 @@ int main(int argc, char **argv) {
                 "  g_tab=%.4e g_real=%.4e ratio=%.3f"
                 "  dE_mean=%.3e dE_max=%.3e eV  g0viol=%zu"
                 "  retention=%+.4f  spd_ratio=%.4f\n",
-                Fcm, -muM * F * 1e-4, muM, se, eM, sM, cM, fM, aM, v2M,
+                // vd is MEASURED now. It used to be `-muM * F * 1e-4`, the
+                // mobility back-converted, which for a hole package printed
+                // the NEGATIVE of the real drift velocity and was read as
+                // evidence that holes drift with the field.
+                Fcm, vdM, muM, se, eM, sM, cM, fM, aM, v2M,
                 scat.getCentroidFallbacks(), meM, gtM, grM,
                 gtM > 0 ? grM / gtM : 0.0, deM, dxM,
                 scat.getG0Violations(), retM, spdM);
