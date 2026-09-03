@@ -156,6 +156,15 @@ int main(int argc, char **argv) {
   for (int b = 1; b < engineNBands; b++)
     scatBand.emplace_back(new FBS(pkg, bs, b, T, cbm + 1.0, binW, mode));
   FBS &scat = *scatBand[0];
+  // DOPING [cm^-3] selects the impurity ladder level (nearest in log10) when
+  // the package carries one; must precede the Gamma0 bounds and the run.
+  if (scat.hasDopingLadder()) {
+    const double want = std::getenv("DOPING") ? std::atof(std::getenv("DOPING")) : -1.0;
+    for (auto &sb : scatBand) { if (want > 0) sb->setDoping(want); }
+    std::printf("# doping ladder: %zu level(s); active N_I = %.3g cm^-3%s\n",
+                scat.getDopingLadder().size(), scat.getActiveDoping(),
+                want > 0 ? "" : "   [DOPING not set: level 0]");
+  }
   for (auto &sb : scatBand)
     sb->setMaxDestBand(static_cast<std::size_t>(engineNBands - 1));
   if (engineNBands > 1) {

@@ -64,6 +64,13 @@ public:
     // final state is placed WITHIN the drawn tet with density 1/(q^2+beta^2)^2
     // rather than uniformly on the iso-polygon - see sampleFinalStateG2.
     T coulombBeta2 = 0;
+    // WP3d DOPING LADDER: a package may carry the impurity mechanism at
+    // several doping levels (add_impurity_mechanism.py --NI a,b,c), each with
+    // its own screening. ladder_index >= 0 marks a level; exactly ONE level is
+    // active at a time (setDoping), every other level contributes nothing to
+    // any rate sum. -1 = always active (every non-ladder mechanism).
+    int dopingLevel = -1;
+    T dopingCm3 = 0;
     // WP3d: destination band of a Coulomb mechanism (phaseA attr `dest_band`);
     // SIZE_MAX means the source band. With the Bloch overlap in the tables,
     // one mechanism per destination band carries the intra/interband split.
@@ -84,6 +91,14 @@ public:
       kResolved = loadPhaseB(packageFile, temperature);
     if (kResolved) {
       // rejection bound for the a(k')-weighted final-state sampler
+      // doping ladder: collect the levels; default to level 0 so a ladder
+      // package is never silently run WITHOUT impurities
+      for (const auto &m : mechanisms)
+        if (m.dopingLevel >= 0) {
+          if ((int)ladderCm3.size() <= m.dopingLevel) ladderCm3.resize(m.dopingLevel + 1, T(0));
+          ladderCm3[m.dopingLevel] = m.dopingCm3;
+        }
+      if (!ladderCm3.empty() && activeLevel < 0) activeLevel = 0;
       aMaxMech.assign(mechanisms.size(), T(0));
       for (std::size_t j = 0; j < mechanisms.size(); j++)
         for (T v : mechanisms[j].ptRates)
@@ -692,6 +707,42 @@ public:
 
   bool isKResolved() const { return kResolved; }
 
+  /// DOPING LADDER. isActive() is the single gate every rate sum passes
+  /// through: a ladder mechanism counts only when its level is the active one.
+  bool isActive(const Mechanism &m) const {
+    return m.dopingLevel < 0 || m.dopingLevel == activeLevel;
+  }
+  bool hasDopingLadder() const { return !ladderCm3.empty(); }
+  /// select the ladder level nearest (in log10) to N [cm^-3]; returns the
+  /// level's density, or 0 when the package has no ladder. Call BEFORE the
+  /// simulation; a device driver selects per particle/cell by local doping.
+  T setDoping(T N_cm3) {
+    if (ladderCm3.empty()) return T(0);
+    int best = 0; T bd = 1e300;
+    for (std::size_t i = 0; i < ladderCm3.size(); i++) {
+      const T d = std::fabs(std::log10(std::max(N_cm3, T(1))) - std::log10(ladderCm3[i]));
+      if (d < bd) { bd = d; best = static_cast<int>(i); }
+    }
+    activeLevel = best;
+    return ladderCm3[best];
+  }
+  const std::vector<T> &getDopingLadder() const { return ladderCm3; }
+  T getActiveDoping() const { return activeLevel >= 0 && activeLevel < (int)ladderCm3.size() ? ladderCm3[activeLevel] : T(0); }
+  /// worst-level total: base (always-active) + max over ladder levels of that
+  /// level's sum. Bounds the rate for EVERY choice of active level, which is
+  /// what the self-scattering constant needs when doping varies in a device.
+  template <class F> T worstLevelSum(F perMech) const {
+    T base = 0;
+    std::vector<T> lev(ladderCm3.size(), T(0));
+    for (std::size_t j = 0; j < mechanisms.size(); j++) {
+      const T v = perMech(j);
+      if (mechanisms[j].dopingLevel < 0) base += v;
+      else if (mechanisms[j].dopingLevel < (int)lev.size()) lev[mechanisms[j].dopingLevel] += v;
+    }
+    T mx = 0; for (T v : lev) mx = std::max(mx, v);
+    return base + mx;
+  }
+
   /// total rate at Cartesian k [1/m]: phaseB = exact-energy phaseA lookup
   /// modulated by the barycentric anisotropy factor, else plain phaseA
   T getTotalRate(const Vec3 &kCart, T energy, std::int64_t &tetHint) const {
@@ -701,7 +752,7 @@ public:
     const std::int64_t t = bs.locateTet(kCart, tetHint, lam);
     T sum = 0;
     for (const auto &m : mechanisms)
-      sum += interp(m, energy) * interpPt(m, t, lam);
+      if (isActive(m)) sum += interp(m, energy) * interpPt(m, t, lam);
     return sum;
   }
 
@@ -714,10 +765,11 @@ public:
     const std::int64_t t = bs.locateTet(kCart, tetHint, lam);
     T tot = 0;
     for (const auto &m : mechanisms)
-      tot += interp(m, energy) * interpPt(m, t, lam);
+      if (isActive(m)) tot += interp(m, energy) * interpPt(m, t, lam);
     std::uniform_real_distribution<T> U(0, tot);
     T r = U(rng), acc = 0;
     for (std::size_t i = 0; i < mechanisms.size(); i++) {
+      if (!isActive(mechanisms[i])) continue;
       acc += interp(mechanisms[i], energy) * interpPt(mechanisms[i], t, lam);
       if (r <= acc)
         return i;
@@ -729,7 +781,7 @@ public:
   T getTotalRate(T energy) const {
     T sum = 0;
     for (const auto &m : mechanisms)
-      sum += interp(m, energy);
+      if (isActive(m)) sum += interp(m, energy);
     return sum;
   }
 
@@ -879,14 +931,12 @@ public:
         T bound = 0;
         if (kResolved) {
           for (int v = 0; v < 4; v++) {
-            T s = 0;
-            for (std::size_t j = 0; j < mechanisms.size(); j++)
-              s += mrScratch[j] * mechanisms[j].ptRates[tv[v]];
+            const T s = worstLevelSum([&](std::size_t j) {
+              return mrScratch[j] * mechanisms[j].ptRates[tv[v]]; });
             bound = std::max(bound, s);
           }
         } else {
-          for (std::size_t j = 0; j < mechanisms.size(); j++)
-            bound += mrScratch[j];
+          bound = worstLevelSum([&](std::size_t j) { return mrScratch[j]; });
         }
         bound *= safety;
         slabG0[i] = std::max(slabG0[i], bound);
@@ -925,16 +975,14 @@ public:
       const auto &Ept = bs.getBandEnergies(bandIdx);
       const std::size_t npt = mechanisms[0].ptRates.size();
       for (std::size_t p = 0; p < npt; p++) {
-        T s = 0;
-        for (const auto &m : mechanisms)
-          s += m.ptRates[p] * interp(m, Ept[p]);
+        const T s = worstLevelSum([&](std::size_t j) {
+          return mechanisms[j].ptRates[p] * interp(mechanisms[j], Ept[p]); });
         mx = std::max(mx, s);
       }
     } else {
       for (std::size_t i = 0; i < mechanisms[0].grid.size(); i++) {
-        T s = 0;
-        for (const auto &m : mechanisms)
-          s += m.rates[std::min(i, m.rates.size() - 1)];
+        const T s = worstLevelSum([&](std::size_t j) {
+          return mechanisms[j].rates[std::min(i, mechanisms[j].rates.size() - 1)]; });
         mx = std::max(mx, s);
       }
     }
@@ -946,6 +994,7 @@ public:
     std::uniform_real_distribution<T> U(0, getTotalRate(energy));
     T r = U(rng), acc = 0;
     for (std::size_t i = 0; i < mechanisms.size(); i++) {
+      if (!isActive(mechanisms[i])) continue;
       acc += interp(mechanisms[i], energy);
       if (r <= acc)
         return i;
@@ -1221,6 +1270,8 @@ private:
   bool kResolved = false;
   bool g2Loaded = false;
   // atomic: sampling is const and may run from several ensemble threads
+  std::vector<T> ladderCm3;  // doping ladder levels [cm^-3], index = ladder_index
+  int activeLevel = -1;      // the ONE active ladder level (-1: no ladder)
   std::vector<T> aMaxMech;   // per-mechanism max of a(k), for the
                              // rejection bound in sampleFinalState
   mutable std::atomic<std::size_t> aWeightTries{0}, aWeightRej{0};
@@ -1535,6 +1586,16 @@ private:
       H5Aread(at, H5T_NATIVE_DOUBLE, &dE);
       H5Aclose(at);
       m.deltaE = static_cast<T>(dE);
+      if (H5Aexists(mg, "ladder_index") > 0) {
+        hid_t al = H5Aopen(mg, "ladder_index", H5P_DEFAULT);
+        long long li = -1; H5Aread(al, H5T_NATIVE_LLONG, &li); H5Aclose(al);
+        m.dopingLevel = static_cast<int>(li);
+        if (H5Aexists(mg, "N_I_cm3") > 0) {
+          hid_t an = H5Aopen(mg, "N_I_cm3", H5P_DEFAULT);
+          double nd = 0; H5Aread(an, H5T_NATIVE_DOUBLE, &nd); H5Aclose(an);
+          m.dopingCm3 = static_cast<T>(nd);
+        }
+      }
       if (H5Aexists(mg, "beta_1_per_m") > 0) {
         hid_t ab = H5Aopen(mg, "beta_1_per_m", H5P_DEFAULT);
         double beta = 0;
