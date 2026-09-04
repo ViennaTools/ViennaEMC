@@ -51,6 +51,13 @@ class emcSimulation {
   PoissonSolver &solver;
   PMScheme pmScheme;
   ParticleHandler particleHandler;
+
+public:
+  /// read access to the handler after execute() - run-level observables a
+  /// handler accumulates (drift velocity, energy, band occupancy)
+  const ParticleHandler &getParticleHandler() const { return particleHandler; }
+
+private:
   emcSimulationResults<T, DeviceType> results;
 
   // optional drift-velocity (Ramo) channel-current tally; off unless a region is

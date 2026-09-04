@@ -712,6 +712,21 @@ public:
   bool isActive(const Mechanism &m) const {
     return m.dopingLevel < 0 || m.dopingLevel == activeLevel;
   }
+  /// per-call level: a DEVICE selects the ladder level per particle from the
+  /// local doping region; -1 means "the global activeLevel"
+  bool isActive(const Mechanism &m, int level) const {
+    return m.dopingLevel < 0 || m.dopingLevel == (level < 0 ? activeLevel : level);
+  }
+  /// ladder level nearest (log10) to N [cm^-3], without changing the global
+  int levelFor(T N_cm3) const {
+    if (ladderCm3.empty()) return -1;
+    int best = 0; T bd = 1e300;
+    for (std::size_t i = 0; i < ladderCm3.size(); i++) {
+      const T d = std::fabs(std::log10(std::max(N_cm3, T(1))) - std::log10(ladderCm3[i]));
+      if (d < bd) { bd = d; best = static_cast<int>(i); }
+    }
+    return best;
+  }
   bool hasDopingLadder() const { return !ladderCm3.empty(); }
   /// select the ladder level nearest (in log10) to N [cm^-3]; returns the
   /// level's density, or 0 when the package has no ladder. Call BEFORE the
@@ -745,31 +760,31 @@ public:
 
   /// total rate at Cartesian k [1/m]: phaseB = exact-energy phaseA lookup
   /// modulated by the barycentric anisotropy factor, else plain phaseA
-  T getTotalRate(const Vec3 &kCart, T energy, std::int64_t &tetHint) const {
+  T getTotalRate(const Vec3 &kCart, T energy, std::int64_t &tetHint, int level = -1) const {
     if (!kResolved)
       return getTotalRate(energy);
     Vec3 lam;
     const std::int64_t t = bs.locateTet(kCart, tetHint, lam);
     T sum = 0;
     for (const auto &m : mechanisms)
-      if (isActive(m)) sum += interp(m, energy) * interpPt(m, t, lam);
+      if (isActive(m, level)) sum += interp(m, energy) * interpPt(m, t, lam);
     return sum;
   }
 
   template <class RNG>
   std::size_t selectMechanism(const Vec3 &kCart, T energy, std::int64_t &tetHint,
-                              RNG &rng) const {
+                              RNG &rng, int level = -1) const {
     if (!kResolved)
       return selectMechanism(energy, rng);
     Vec3 lam;
     const std::int64_t t = bs.locateTet(kCart, tetHint, lam);
     T tot = 0;
     for (const auto &m : mechanisms)
-      if (isActive(m)) tot += interp(m, energy) * interpPt(m, t, lam);
+      if (isActive(m, level)) tot += interp(m, energy) * interpPt(m, t, lam);
     std::uniform_real_distribution<T> U(0, tot);
     T r = U(rng), acc = 0;
     for (std::size_t i = 0; i < mechanisms.size(); i++) {
-      if (!isActive(mechanisms[i])) continue;
+      if (!isActive(mechanisms[i], level)) continue;
       acc += interp(mechanisms[i], energy) * interpPt(mechanisms[i], t, lam);
       if (r <= acc)
         return i;
