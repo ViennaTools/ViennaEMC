@@ -128,6 +128,11 @@ public:
   }
 
   /// calculates non-equilibrium potential
+  /// declare the single simulated species to be holes (p-type device with
+  /// emcHole as the only moved type); default false = electrons
+  void setMobileSpeciesHoles(bool holes) { mobileSpeciesIsHoles = holes; }
+  bool mobileSpeciesIsHoles = false;
+
   void calcNonEquilibriumPotential(GridType &pot, const DeviceType & /*device*/,
                                    const GridType &eConc, bool resetBC = true) {
     SizeVecSurface coordSurf;
@@ -164,8 +169,22 @@ public:
           continue;
         }
 
-        p = std::exp(-currPot);
-        n = eConc[coord];
+        // MOBILE SPECIES. The simulated concentration is the ELECTRON density
+        // by default, with holes in analytic equilibrium p = exp(-phi). For a
+        // hole-only simulation (p-type device, emcHole as the single moved
+        // type) the roles swap: the given concentration is p and the
+        // electrons are the equilibrium n = exp(+phi). Without the swap a
+        // p-type resistor treats its holes as negative charge, pulls them to
+        // the positive contact and inverts the interior field (seen on the
+        // full-band p-resistor, 2026-09-04). Default keeps every existing
+        // electron simulation bit-identical.
+        if (mobileSpeciesIsHoles) {
+          p = eConc[coord];
+          n = std::exp(currPot);
+        } else {
+          p = std::exp(-currPot);
+          n = eConc[coord];
+        }
         nominator = hProduct * (p - n + doping[coord] + currPot * (p + n));
         denominator = 2 * hFactorSum + hProduct * (n + p);
         for (SizeType idxDim = 0; idxDim < Dim; idxDim++) {

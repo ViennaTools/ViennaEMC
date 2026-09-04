@@ -37,6 +37,15 @@
  * mirror-symmetric about it - true for cubic Si with device axes along
  * <100>, which is what the first milestone uses.
  *
+ * HOLES. A hole package stores E = VBM - E_electron with negated velocities:
+ * the carrier is a formal ELECTRON on the inverted band, and its k-space
+ * trajectory - integrated with force -q E exactly as for electrons, which is
+ * what the bulk driver validated - is the MIRROR of the physical hole's. So
+ * the k-update, the energy, the scattering and the injection are carrier-
+ * agnostic; only the real-space velocity flips: v_physical = -v_stored. The
+ * framework's emcHole type supplies +q for Poisson and the current tally.
+ * The carrier is read from the package's own `carrier` attribute.
+ *
  * CONFIGURATION. emcSimulation constructs the handler itself with a fixed
  * signature, so the package path and run knobs are static members the
  * driver sets BEFORE constructing the simulation.
@@ -109,6 +118,7 @@ private:
   T cbm = 0;
   std::vector<T> gamma0B, slabWB, vMaxB, zB;
   std::vector<int> levelOfRegion;   ///< doping region index -> ladder level
+  T carrierSign = 1;                ///< +1 electron package, -1 hole package
   T zTot = 0;
   int nb = 1;
 
@@ -160,7 +170,9 @@ public:
       auto &type = partType.second;
       if (!type->isMoved())
         continue;
-      const T charge = type->getCharge();
+      // k-space dynamics ALWAYS with -q: the package's carrier is a formal
+      // electron (see HOLES above); the type's charge sign is for Poisson
+      const T charge = -constants::q;
       std::vector<SizeType> idxToRemove;
 #pragma omp parallel
       {
@@ -195,7 +207,7 @@ public:
               p.k[i] += force[i] * dt / constants::hbar;
             const auto vEnd = bs->getVelocity(p.k, p.band, p.hint);
             T vm[3];
-            for (int c = 0; c < 3; c++) vm[c] = T(0.5) * (vCur[c] + vEnd[c]);
+            for (int c = 0; c < 3; c++) vm[c] = carrierSign * T(0.5) * (vCur[c] + vEnd[c]);
             for (SizeType c = 0; c < Dim; c++) pos[c] += vm[c] * dt;
             if (accumulate) {
               for (int c = 0; c < 3; c++) tV[c] += vm[c] * dt;
@@ -319,7 +331,7 @@ public:
       const auto &pos = positions[idxType][i];
       if (pos[0] < x0 || pos[0] > x1) continue;
       auto &p = const_cast<FBParticle &>(particles[idxType][i]);
-      sumVx += bs->getVelocity(p.k, p.band, p.hint)[0];
+      sumVx += carrierSign * bs->getVelocity(p.k, p.band, p.hint)[0];
     }
     return constants::q * Base::nrCarriersPerPart * sumVx / channelLength;
   }
@@ -342,6 +354,7 @@ public:
   long long removedAtContacts() const { return nRemoved; }
   long long reflections() const { return nReflected; }
   const FBS &scattering(int b) const { return *scatBand[b]; }
+  T carrier() const { return carrierSign; }   ///< +1 electrons, -1 holes
   T bandEdge() const { return cbm; }
   int bands() const { return nb; }
 
@@ -414,6 +427,24 @@ private:
       throw std::runtime_error("emcFullBandParticleHandler: set packagePath first");
     bs.reset(new NBS(packagePath));
     cbm = bs->getBandMinimum(0);
+    {   // carrier attribute on /bands/electron ("hole" -> flipped axis)
+      hid_t f = H5Fopen(packagePath.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
+      if (f >= 0) {
+        hid_t g = H5Gopen2(f, "/bands/electron", H5P_DEFAULT);
+        if (g >= 0) {
+          if (H5Aexists(g, "carrier") > 0) {
+            hid_t a = H5Aopen(g, "carrier", H5P_DEFAULT); hid_t t = H5Aget_type(a);
+            char buf[64] = {0};
+            if (H5Tis_variable_str(t)) { char *q = nullptr; if (H5Aread(a, t, &q) >= 0 && q) { std::snprintf(buf, sizeof buf, "%s", q); free(q); } }
+            else H5Aread(a, t, buf);
+            if (std::string(buf).find("hole") != std::string::npos) carrierSign = T(-1);
+            H5Tclose(t); H5Aclose(a);
+          }
+          H5Gclose(g);
+        }
+        H5Fclose(f);
+      }
+    }
     nb = nrBands > 0 ? nrBands : static_cast<int>(bs->getNrBands());
     for (int b = 0; b < nb; b++)
       scatBand.emplace_back(new FBS(packagePath, *bs, b, temperature,
@@ -463,8 +494,8 @@ private:
       vMaxB.push_back(bs->getMaxSpeed(b));
       zB.push_back(scatBand[b]->thermalWeight(kT)); zTot += zB.back();
     }
-    std::printf("# full-band handler: %s  %d band(s)  T=%.0f K  doping level %.3g cm^-3%s\n",
-                packagePath.c_str(), nb, temperature,
+    std::printf("# full-band handler: %s  %s  %d band(s)  T=%.0f K  doping level %.3g cm^-3%s\n",
+                packagePath.c_str(), carrierSign < 0 ? "HOLES (flipped axis, v_physical = -v_stored)" : "electrons", nb, temperature,
                 scatBand[0]->hasDopingLadder() ? scatBand[0]->getActiveDoping() : N,
                 scatBand[0]->hasDopingLadder() ? " (ladder)" : " (package as built)");
   }

@@ -26,6 +26,7 @@
 #include <PMSchemes/emcCICScheme.hpp>
 #include <PMSchemes/emcNGPScheme.hpp>
 #include <ParticleType/emcElectron.hpp>
+#include <ParticleType/emcHole.hpp>
 #include <PoissonSolver/emcSORSolver.hpp>
 #include <emcSimulation.hpp>
 
@@ -62,6 +63,8 @@ int main(int argc, char **argv) {
   const int poissonEvery = argc > 9 ? std::atoi(argv[9]) : 1; // solve Poisson every n steps (frozen field test)
   const SizeType carriersPerPart = argc > 10 ? std::atoi(argv[10]) : 1;
   const std::string profile = argc > 11 ? argv[11] : "";
+  const bool holes = argc > 12 && std::string(argv[12]) == "hole";   // p-type: emcHole + negative doping
+  const double dopSign = holes ? -1.0 : 1.0;
 #ifdef _OPENMP
   omp_set_num_threads(nThreads);
 #endif
@@ -80,7 +83,7 @@ int main(int argc, char **argv) {
   DeviceType device{material, maxPos, spacing};
   device.setDeviceWidth(Lz);
   if (profile.empty()) {
-    device.addConstantDopingRegion(origin, maxPos, dopingCm3 * 1e6);   // m^-3
+    device.addConstantDopingRegion(origin, maxPos, dopSign * dopingCm3 * 1e6);   // m^-3, negative = acceptors
   } else {
     // "N1@x1,N2@x2,N3": region i spans [x_{i-1}, x_i), the last to Lx
     double x0 = 0; std::string rest = profile;
@@ -91,7 +94,7 @@ int main(int argc, char **argv) {
       const double N = std::atof(tok.substr(0, at).c_str());
       const double x1 = at == std::string::npos ? Lx : std::atof(tok.substr(at + 1).c_str()) * 1e-6;
       ValueVec lo = {x0, 0}, hi = {x1, Ly};
-      device.addConstantDopingRegion(lo, hi, N * 1e6);
+      device.addConstantDopingRegion(lo, hi, dopSign * N * 1e6);
       std::printf("# doping region [%.2f, %.2f) um: %.3g cm^-3\n", x0 * 1e6, x1 * 1e6, N);
       x0 = x1;
     }
@@ -100,6 +103,7 @@ int main(int argc, char **argv) {
   device.addOhmicContact(emcBoundaryPos::XMIN, voltage, {origin[1]}, {maxPos[1]});
 
   PoissonSolver solver(device, 1e-4, 1.8);
+  solver.setMobileSpeciesHoles(holes);   // p-type: the simulated species is holes
   PMScheme pmScheme;
   emcSimulationParameter<NumType, DeviceType> param;
   param.setTimes(tTotal, dT, tTrans);
@@ -112,9 +116,15 @@ int main(int argc, char **argv) {
   // moved type with no valley, so it gets the analytic X valley - which the
   // full-band handler never calls - and NO scattering mechanisms, so its
   // scatter tables are inert zeros.
-  auto electrons = std::make_unique<emcElectron<NumType, DeviceType>>(1000, 4, false);
-  Silicon::addXValley(electrons);
-  param.addParticleType(std::move(electrons));
+  if (holes) {
+    auto h = std::make_unique<emcHole<NumType, DeviceType>>(1000, 4, false);
+    Silicon::addXValley(h);   // dummy valley for check(); never called
+    param.addParticleType(std::move(h));
+  } else {
+    auto electrons = std::make_unique<emcElectron<NumType, DeviceType>>(1000, 4, false);
+    Silicon::addXValley(electrons);
+    param.addParticleType(std::move(electrons));
+  }
 
   SimulationType simulation(param, device, solver, pmScheme);
   simulation.setPoissonInterval(poissonEvery);
@@ -125,7 +135,7 @@ int main(int argc, char **argv) {
   const auto &h = simulation.getParticleHandler();
   const double F = voltage / Lx;                      // V/m, along -x for electrons? sign below
   const double vx = h.meanVelocity(0);
-  const double mu = -vx / F * 1e4;                    // electrons drift against the field: mu = -v/F
+  const double mu = -h.carrier() * vx / F * 1e4;      // electrons drift against E (mu = -v/F), holes with it
   std::printf("# full-band resistor: V=%.3f V over %.2f um -> F=%.0f V/cm, doping %.3g cm^-3, width %.1f um, Poisson every %d, PM=%s\n",
               voltage, Lx * 1e6, F * 1e-2, dopingCm3, Lz * 1e6, poissonEvery,
 #ifdef PM_NGP
@@ -154,6 +164,6 @@ int main(int argc, char **argv) {
   }
   if (wIn > 0)
     std::printf("#   INTERIOR 0.2-0.8 um: <vx> = %.4e m/s  <E>-CBM = %.4f eV  -> mu(nominal F) = %.1f cm2/Vs\n",
-                vIn / wIn, eIn / wIn, -(vIn / wIn) / F * 1e4);
+                vIn / wIn, eIn / wIn, -h.carrier() * (vIn / wIn) / F * 1e4);
   return 0;
 }
