@@ -325,6 +325,35 @@ public:
     }
   }
 
+  /// per-cell observables through emcSimulationResults: instantaneous means
+  /// over the particles in each cell (physical velocity [m/s], energy above
+  /// the band edge [eV], share of carriers in bands >= 1), zero in empty
+  /// cells; the results object averages them over the final-average steps
+  /// and writes <prefix>FB{Vx,Vy,Energy,BandShare}Avg.txt.
+  std::vector<std::string> fieldNames() const override {
+    return {"FBVx", "FBVy", "FBEnergy", "FBBandShare"};
+  }
+  void fillFields(std::map<std::string, emcGrid<T, Dim>> &fields) override {
+    auto &fvx = fields.at("FBVx"); auto &fvy = fields.at("FBVy");
+    auto &fe = fields.at("FBEnergy"); auto &fb = fields.at("FBBandShare");
+    emcGrid<T, Dim> cnt(deviceExtent, 0);
+    fvx.fill(0); fvy.fill(0); fe.fill(0); fb.fill(0);
+    for (const auto &type : Base::idxTypeToPartType) {
+      if (!type.second->isMoved()) continue;
+      const SizeType it = type.first;
+      for (SizeType i = 0; i < getNrParticles(it); i++) {
+        auto &p = particles[it][i];
+        const auto c = Base::device.posToCoord(positions[it][i]);
+        const auto v = bs->getVelocity(p.k, p.band, p.hint);
+        fvx[c] += carrierSign * v[0]; fvy[c] += carrierSign * v[1];
+        fe[c] += p.energy - cbm; fb[c] += p.band > 0 ? T(1) : T(0); cnt[c] += 1;
+      }
+    }
+    SizeVec c;
+    for (c.fill(0); !cnt.isEndCoord(c); cnt.advanceCoord(c))
+      if (cnt[c] > 0) { fvx[c] /= cnt[c]; fvy[c] /= cnt[c]; fe[c] /= cnt[c]; fb[c] /= cnt[c]; }
+  }
+
   T getChannelDriftCurrent(SizeType idxType, T x0, T x1, T channelLength) const {
     T sumVx = 0;
     for (SizeType i = 0; i < getNrParticles(idxType); ++i) {

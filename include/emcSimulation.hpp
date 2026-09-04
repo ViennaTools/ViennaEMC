@@ -97,6 +97,8 @@ public:
         particleHandler(device, pmScheme, param.particleTypes,
                         param.nrCarriersPerPart, param.seedRNG),
         results(device, param) {
+    for (const auto &name : particleHandler.fieldNames())
+      results.registerField(name);
     param.check();
     param.print();
     checkDopingProfile();
@@ -195,6 +197,7 @@ private:
       if (!isTransient) {
         results.updateCurrent(nrRemPart, nrInjPart);
         accumulateDriftCurrent();
+        particleHandler.fillFields(results.fields);
       }
     }
   }

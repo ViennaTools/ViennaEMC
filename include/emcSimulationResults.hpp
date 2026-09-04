@@ -1,6 +1,7 @@
 #ifndef EMC_SIMULATION_RESULTS_HPP
 #define EMC_SIMULATION_RESULTS_HPP
 
+#include <map>
 #include <vector>
 
 #include <emcConstants.hpp>
@@ -52,6 +53,13 @@ template <class T, class DeviceType> class emcSimulationResults {
   GridType currPot, avgPot;
   std::vector<GridType> currConc, avgConc, eField, nrPart;
   SizeType nrCummSteps{0}, nrAvgSteps{0}; /**< counter */
+  /// NAMED FIELDS a particle handler can publish per step (full-band: drift
+  /// velocity, mean energy, band share per cell). Registered by name from
+  /// the handler's fieldNames(), filled by its fillFields() every
+  /// non-transient step, averaged over the final-average steps exactly like
+  /// the potential, and written as <prefix><name>Avg.txt in the same grid
+  /// format - so a handler adds observables without touching the driver.
+  std::map<std::string, GridType> fields, avgFields;
   std::vector<NettoParticleCounter> nettoPart;
   std::vector<CurrentMeasurement> current;
   CurrentMeasurement nettoPartSum;
@@ -84,8 +92,14 @@ public:
   /// @brief updates average characteristics of interest.
   /// Currently this includes updating the average potential and particle
   /// concentration of all included particle types.
+  void registerField(const std::string &name) {
+    fields.emplace(name, GridType(currPot.getExtent()));
+    avgFields.emplace(name, GridType(currPot.getExtent()));
+  }
+
   void updateAverageCharacteristics() {
     avgPot += currPot;
+    for (auto &[name, g] : fields) avgFields[name] += g;
     std::transform(avgConc.begin(), avgConc.end(), currConc.begin(),
                    avgConc.begin(),
                    [](GridType &avg, GridType &curr) { return avg + curr; });
@@ -200,6 +214,12 @@ public:
     else
       writeToFile(finalPot, param.namePrefix + "PotentialAvg",
                   undoNormalizationPotential, device);
+
+    for (const auto &[name, g] : avgFields) {
+      GridType f{g.getExtent()};
+      std::transform(g.begin(), g.end(), f.begin(), calcAvg);
+      writeToFile(f, param.namePrefix + name + "Avg");
+    }
   }
 
 private:

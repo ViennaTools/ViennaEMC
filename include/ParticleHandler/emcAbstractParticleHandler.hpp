@@ -182,6 +182,11 @@ public:
    */
   virtual T getParticlePotential(const ValueVec &position) { return 0; }
 
+  /*! \brief Named per-cell observables a handler publishes through
+   * emcSimulationResults (see its `fields`). Default: none. */
+  virtual std::vector<std::string> fieldNames() const { return {}; }
+  virtual void fillFields(std::map<std::string, emcGrid<T, Dim>> & /*fields*/) {}
+
 protected:
   /// \brief Creates one new particle of a specific particleType.
   virtual void addParticle(SizeType idxType, const SizeVec &coord, emcRNG &rng,

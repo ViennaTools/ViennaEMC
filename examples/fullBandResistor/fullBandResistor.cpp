@@ -153,14 +153,11 @@ int main(int argc, char **argv) {
   // x-profiles: interior (0.2..0.8 um) vs contact regions
   const SizeType nx = h.profileSize();
   double vIn = 0, wIn = 0, eIn = 0;
-  std::printf("# x-profile (every 5th column): x[um]  <vx>[m/s]  <E>-CBM[eV]  rel.density\n");
-  double wTot = 0; for (SizeType i = 0; i < nx; i++) wTot += h.profileWeight(i);
+  // per-cell fields (velocity, energy, band share) are written by the
+  // framework as <prefix>FB*Avg.txt; only the interior summary is printed here
   for (SizeType i = 0; i < nx; i++) {
     const double x = i * hx;
     if (x >= 0.2e-6 && x <= 0.8e-6) { vIn += h.profileVx(i) * h.profileWeight(i); eIn += h.profileE(i) * h.profileWeight(i); wIn += h.profileWeight(i); }
-    if (i % 5 == 0 || i + 1 == nx)
-      std::printf("#   %5.2f  %10.1f  %7.4f  %6.3f\n", x * 1e6, h.profileVx(i), h.profileE(i),
-                  h.profileWeight(i) / (wTot / nx) * ((i == 0 || i + 1 == nx) ? 2.0 : 1.0));
   }
   if (wIn > 0)
     std::printf("#   INTERIOR 0.2-0.8 um: <vx> = %.4e m/s  <E>-CBM = %.4f eV  -> mu(nominal F) = %.1f cm2/Vs\n",
