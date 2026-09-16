@@ -46,18 +46,54 @@ using remoteSOMech = emcRemoteSurfaceOpticalPhononMechanism<NumType>;
 const NumType rho = 3.1e-6; // in kg / m2
 
 // characteristics K-Valley (assume isotrop + parabolic)
-const NumType relEffMassK = 0.48;
+// compile-time overrides for sensitivity studies (defaults reproduce the model exactly)
+#ifndef MOS2_MEFF_K
+#define MOS2_MEFF_K 0.48
+#endif
+#ifndef MOS2_HW_LO_GAMMA
+#define MOS2_HW_LO_GAMMA 0.048
+#endif
+#ifndef MOS2_DP_CAL
+#define MOS2_DP_CAL 1.0
+#endif
+// The polar (Froehlich) coupling constant is the first-principles value and is NOT
+// scaled by the deformation-potential calibration (default 1.0); scaling it changes
+// the room-temperature mobility by less than 2 % (validation/mos2_sensitivity.cpp).
+#ifndef MOS2_FROEHLICH_CAL
+#define MOS2_FROEHLICH_CAL 1.0
+#endif
+const NumType relEffMassK = MOS2_MEFF_K;
 const SizeType degeneracyK = 6;
 
 // characteristics for Acoustic Scattering
 const NumType vSoundLA = 6.7e3; // in m / s
 const NumType vSoundTA = 4.2e3; // in m / s
-const NumType AcDefPotLA = 2.8; // in eV
-const NumType AcDefPotTA = 1.6; // in eV
+// Production defaults (revision of 10 Sep 2026): first-principles couplings of the
+// K valley from the DFPT/AHC chain (PBE, norm-conserving, 11 explicit q-points;
+// Papers/.../review/couplings/): acoustic Xi_LA = 6.0 eV, Xi_TA = 2.3 eV are the
+// angle-averaged values at the thermal phonon wavevector |q| = 0.14 1/A (they fall
+// to 4.6 / 1.8 eV at 0.3 1/A); homopolar A1' 3.2e8 eV/cm and K-K' intervalley
+// 1.7e8 eV/cm. Kaasbjerg's LDA values (2.8, 1.6, 4.1e8, 2.6e8) are recovered with
+// -DMOS2_XI_LA=2.8 -DMOS2_XI_TA=1.6 -DMOS2_D_IV0_HO=4.1e10 -DMOS2_D_IV0_LO=2.6e10;
+// the submitted paper's calibrated kernel additionally needs -DMOS2_DP_CAL=1.6.
+#ifndef MOS2_XI_LA
+#define MOS2_XI_LA 6.0
+#endif
+#ifndef MOS2_XI_TA
+#define MOS2_XI_TA 2.3
+#endif
+#ifndef MOS2_D_IV0_LO
+#define MOS2_D_IV0_LO 1.7e10
+#endif
+#ifndef MOS2_D_IV0_HO
+#define MOS2_D_IV0_HO 3.2e10
+#endif
+const NumType AcDefPotLA = MOS2_XI_LA; // in eV (Kaasbjerg: 2.8)
+const NumType AcDefPotTA = MOS2_XI_TA; // in eV (Kaasbjerg: 1.6)
 
 // characteristics for Zero-order Intervalley Scattering
-const NumType Iv0DefPotLO = 2.6e10; // in eV / m
-const NumType Iv0DefPotHO = 4.1e10; // in eV / m
+const NumType Iv0DefPotLO = MOS2_D_IV0_LO; // in eV / m (Kaasbjerg: 2.6e10)
+const NumType Iv0DefPotHO = MOS2_D_IV0_HO; // in eV / m (Kaasbjerg: 4.1e10)
 
 // characterisics for First-Order Intervalley Scattering
 const NumType Iv1DefPotTA = 5.9;      // in eV
@@ -65,23 +101,14 @@ const NumType Iv1DefPotLA = 3.9;      // in eV
 const NumType Iv1DefPotTOGamma = 4.0; // in eV
 const NumType Iv1DefPotTO = 1.9;      // in eV
 
-// EFFECTIVE-parameter calibration factor for the intrinsic phonon deformation
-// potentials + Froehlich coupling (NOT the piezoelectric constant, which keeps
-// its DFT value e11). This is a PHENOMENOLOGICAL knob, not first-principles
-// physics: deformation-potential theory systematically OVERESTIMATES the
-// mobility because it omits quadrupole scattering and the full q-dependence of
-// the electron-phonon coupling matrix elements (for electrons, spin-orbit
-// coupling is minor, ~3 meV conduction splitting) -- none of which an analytic
-// DP model can represent explicitly. We therefore treat the deformation
-// potentials as EFFECTIVE parameters and scale them so the intrinsic
-// (unscreened, low-density) room-temperature electron mobility matches the
-// modern first-principles value (~136-167 cm2/Vs; Zhang & Liu 2022 quadrupole =
-// 136, dipole = 167; Li et al. LBTE ~150) instead of the ~410 cm2/Vs the bare
-// deformation potentials reproduce. Rate ~ DP^2, so mobility ~ 1/dpCalibration^2
-// (with a fixed piezoelectric floor). dpCalibration = 1.60 gives ~150 cm2/Vs;
-// dpCalibration = 1.0 recovers the original bare parameters. See the calibration
-// note for the full framing and its limitations.
-const NumType dpCalibration = 1.60;
+// Optional global factor on the deformation potentials (acoustic, zero- and
+// first-order intervalley; not the polar-optical, piezoelectric or Coulomb terms).
+// Default 1.0: the couplings above are used as computed. The submitted version of
+// the MoS2 paper used Kaasbjerg's LDA couplings with dpCalibration = 1.60, which
+// reproduced the measured room-temperature mobility range; the first-principles
+// acoustic couplings of the revision give the same result without the factor
+// (see Papers/manuscript/mos2_paper_2dmat_rev/review/couplings/README.md).
+const NumType dpCalibration = MOS2_DP_CAL;
 
 // used phonon energies in specific valleys
 // PAPER: https://journals.aps.org/prb/abstract/10.1103/PhysRevB.90.165436
@@ -91,7 +118,7 @@ const NumType phononEnergyTOK = 0.048;     // in eV
 const NumType phononEnergyTOGamma = 0.048; // in eV
 const NumType phononEnergyHP = 0.05;       // in eV
 const NumType phononEnergyLOK = 0.041;     // in eV
-const NumType phononEnergyLOGamma = 0.048; // in eV
+const NumType phononEnergyLOGamma = MOS2_HW_LO_GAMMA; // in eV
 
 // parameter for Froehlich scattering, found in:
 // https://journals.aps.org/prb/abstract/10.1103/PhysRevB.90.165436
@@ -218,7 +245,8 @@ void addFroehlichScatterMechanisms(
   NumType screeningWavevector = twoDStaticScreeningWavevector<NumType>(
       carrierDensity, temperature, envPermittivity,
       relEffMassK * constants::me, 4);
-  NumType cc = dpCal * couplingConst; // effective (calibrated) polar coupling
+  (void)dpCal; // the deformation-potential factor does not apply to the polar coupling
+  NumType cc = MOS2_FROEHLICH_CAL * couplingConst;
 
   particleType->addScatterMechanism(
       idxRegions, std::make_unique<froehlichAb>(0, phononEnergyLOGamma, cc,

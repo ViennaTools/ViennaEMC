@@ -37,7 +37,10 @@ using screenedOptical = emcScreenedIntravalleyOpticalMechanism<NumType>;
 const NumType relEffMassK = 0.47;
 
 const NumType rho = 3.1e-6;    // in kg / m2
-const NumType energyQK = 0.16; // in eV
+#ifndef MOS2_EQK
+#define MOS2_EQK 0.16 // K-Q valley separation [eV]; override with -DMOS2_EQK=...
+#endif
+const NumType energyQK = MOS2_EQK; // in eV
 const NumType vSound = 6.6e3;  // in m / s
 
 // characteristics for intra- + intervalley scattering

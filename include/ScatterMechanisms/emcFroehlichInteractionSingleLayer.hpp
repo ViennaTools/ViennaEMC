@@ -5,6 +5,7 @@
 #include <array>
 #include <cassert>
 #include <cmath>
+#include <vector>
 
 #include <ScatterMechanisms/emc2DScreening.hpp>
 #include <ScatterMechanisms/emcScatterMechanism.hpp>
@@ -20,7 +21,7 @@
  * Sohier, Calandra & Mauri, PRB 94, 085415) and, optionally, free-carrier
  * screening (see emc2DScreening.hpp):
  *
- *     dS/dpsi  ~  |g(q)|^2  =  erfc(q * w / 2)^2 / ( q * eps(q)^2 ) ,
+ *     dS/dpsi  ~  |g(q)|^2  =  F(q)^2 / eps(q)^2 ,   F = erfc(q * w / 2) or tabulated,
  *
  * where the magnitude of the momentum transfer is fixed by momentum and energy
  * conservation,
@@ -41,17 +42,21 @@
  * @param screeningWavevector 2D free-carrier screening wavevector q_s [1 / m]
  *        (0 = unscreened)
  */
-template <class T>
-T sampleSingleLayerFroehlichDeflectionAngle(
-    T k, T kPrime, T effWidth, T screeningWavevector, emcRNG &rng,
-    std::uniform_real_distribution<T> &dist) {
+template <class T, class FormFactor>
+T sampleSingleLayerFroehlichDeflectionAngleFF(
+    T k, T kPrime, const FormFactor &formFactor, T screeningWavevector,
+    emcRNG &rng, std::uniform_real_distribution<T> &dist) {
   auto weight = [&](T psi) -> T {
     T q2 = k * k + kPrime * kPrime - 2 * k * kPrime * std::cos(psi);
     T q = std::sqrt(std::max(T(0), q2));
     if (q <= T(0))
       return T(0);
-    T ff = std::erfc(effWidth * q / 2);
-    return ff * ff * twoDScreeningFactor(q, screeningWavevector) / q;
+    T ff = formFactor(q);
+    // 2D: the final-state density per deflection angle is constant (the radial
+    // delta function removes k' dk'), so dS/dpsi is proportional to |g(q(psi))|^2
+    // itself; no 1/q Jacobian enters here (it would belong to an integral over
+    // |q| at fixed angle, which the rate integral performs separately).
+    return ff * ff * twoDScreeningFactor(q, screeningWavevector);
   };
   // Sample the deflection magnitude in [0, pi] by numerical inversion of the
   // (unnormalized) cumulative distribution built with the midpoint rule. This
@@ -73,6 +78,33 @@ T sampleSingleLayerFroehlichDeflectionAngle(
   T frac = (target - cdf[lo - 1]) / (cdf[lo] - cdf[lo - 1]);
   T psiMag = (T(lo) - 1 + frac) * dpsi; // deflection magnitude in [0, pi]
   return (dist(rng) < T(0.5)) ? psiMag : (2 * constants::pi - psiMag);
+}
+
+/// erfc (Gaussian layer profile) form factor, the original interface.
+template <class T>
+T sampleSingleLayerFroehlichDeflectionAngle(
+    T k, T kPrime, T effWidth, T screeningWavevector, emcRNG &rng,
+    std::uniform_real_distribution<T> &dist) {
+  return sampleSingleLayerFroehlichDeflectionAngleFF(
+      k, kPrime, [effWidth](T q) { return std::erfc(effWidth * q / 2); },
+      screeningWavevector, rng, dist);
+}
+
+/// Linear interpolation of a tabulated form factor F(q) (q in 1/m, ascending),
+/// held constant beyond both ends. Empty table = erfc(effWidth q / 2).
+template <class T>
+T tabulatedOrErfcFormFactor(const std::vector<T> &ffQ, const std::vector<T> &ffF,
+                            T effWidth, T q) {
+  if (ffQ.empty())
+    return std::erfc(effWidth * q / 2);
+  if (q <= ffQ.front())
+    return ffF.front();
+  if (q >= ffQ.back())
+    return ffF.back();
+  auto it = std::upper_bound(ffQ.begin(), ffQ.end(), q);
+  SizeType i = it - ffQ.begin(); // ffQ[i-1] < q <= ffQ[i]
+  T w = (q - ffQ[i - 1]) / (ffQ[i] - ffQ[i - 1]);
+  return ffF[i - 1] + w * (ffF[i] - ffF[i - 1]);
 }
 
 /*! \brief Froehlich Interaction Absorption for single-layer of
@@ -102,6 +134,7 @@ private:
   mutable std::uniform_real_distribution<T> dist;
   std::string nameSuffix;
   T screeningWavevector;
+  std::vector<T> ffQ, ffF; // optional tabulated form factor
 
 public:
   emcFroehlichInteractionAbsorptionSL() = delete;
@@ -129,6 +162,27 @@ public:
     T nrPhonons = 1. / (std::exp(exponent) - 1.);
     scatterConst = std::pow(couplingConstant * constants::q, 2) * nrPhonons /
                    (2 * constants::pi * std::pow(constants::hbar, 3));
+  }
+
+  /*! \brief Constructor with a tabulated form factor: |g(q)| = couplingConstant
+   * / sqrt(A_cell) * F(q), F from (q [1/m], F) pairs in ascending q (linear
+   * interpolation, constant beyond the ends). Serves any intravalley optical
+   * mode whose matrix element is known as a function of |q| (first-principles
+   * LO or homopolar couplings). */
+  emcFroehlichInteractionAbsorptionSL(SizeType inValley, T inPhononEnergy, T couplingConstant,
+      const std::vector<std::pair<T, T>> &formFactorTable, T temperature,
+      std::string inNameSuffix = "", T inScreeningWavevector = 0)
+      : emcFroehlichInteractionAbsorptionSL(inValley, inPhononEnergy, couplingConstant, T(0), temperature,
+           inNameSuffix, inScreeningWavevector) {
+    for (const auto &qf : formFactorTable) {
+      ffQ.push_back(qf.first);
+      ffF.push_back(qf.second);
+    }
+  }
+
+  /// form factor F(q) of the matrix element (erfc or tabulated)
+  T formFactor(T q) const {
+    return tabulatedOrErfcFormFactor(ffQ, ffF, effWidth, q);
   }
 
   std::string getName() const { return "froehlichAbsorptionSL" + nameSuffix; }
@@ -160,8 +214,9 @@ public:
 
     // initial in-plane angle to x-axis; atan2 handles k[0]==0 correctly
     T phi = std::atan2(particle.k[1], particle.k[0]);
-    T psi = sampleSingleLayerFroehlichDeflectionAngle(
-        k, kPrime, effWidth, screeningWavevector, rng, dist);
+    T psi = sampleSingleLayerFroehlichDeflectionAngleFF(
+        k, kPrime, [this](T q) { return formFactor(q); }, screeningWavevector,
+        rng, dist);
 
     particle.k[0] = kPrime * std::cos(phi + psi);
     particle.k[1] = kPrime * std::sin(phi + psi);
@@ -176,7 +231,7 @@ private:
     T root = std::sqrt(cosTheta * cosTheta + eFactor);
     T q = k * (-cosTheta + root); // momentum transfer at this angle
     return (-cosTheta + root) / root *
-           std::pow(std::erfc(effWidth * q / 2.), 2) *
+           std::pow(formFactor(q), 2) *
            twoDScreeningFactor(q, screeningWavevector);
   }
 
@@ -230,6 +285,7 @@ private:
   T scatterConst;
   std::string nameSuffix;
   T screeningWavevector;
+  std::vector<T> ffQ, ffF; // optional tabulated form factor
 
   mutable std::uniform_real_distribution<T> dist;
 
@@ -259,6 +315,27 @@ public:
     T nrPhonons = std::exp(exponent) / (std::exp(exponent) - 1.);
     scatterConst = std::pow(couplingConstant * constants::q, 2) * nrPhonons /
                    (2 * constants::pi * std::pow(constants::hbar, 3));
+  }
+
+  /*! \brief Constructor with a tabulated form factor: |g(q)| = couplingConstant
+   * / sqrt(A_cell) * F(q), F from (q [1/m], F) pairs in ascending q (linear
+   * interpolation, constant beyond the ends). Serves any intravalley optical
+   * mode whose matrix element is known as a function of |q| (first-principles
+   * LO or homopolar couplings). */
+  emcFroehlichInteractionEmissionSL(SizeType inValley, T inPhononEnergy, T couplingConstant,
+      const std::vector<std::pair<T, T>> &formFactorTable, T temperature,
+      std::string inNameSuffix = "", T inScreeningWavevector = 0)
+      : emcFroehlichInteractionEmissionSL(inValley, inPhononEnergy, couplingConstant, T(0), temperature,
+           inNameSuffix, inScreeningWavevector) {
+    for (const auto &qf : formFactorTable) {
+      ffQ.push_back(qf.first);
+      ffF.push_back(qf.second);
+    }
+  }
+
+  /// form factor F(q) of the matrix element (erfc or tabulated)
+  T formFactor(T q) const {
+    return tabulatedOrErfcFormFactor(ffQ, ffF, effWidth, q);
   }
 
   std::string getName() const { return "froehlichEmissionSL" + nameSuffix; }
@@ -295,8 +372,9 @@ public:
 
     // initial in-plane angle to x-axis; atan2 handles k[0]==0 correctly
     T phi = std::atan2(particle.k[1], particle.k[0]);
-    T psi = sampleSingleLayerFroehlichDeflectionAngle(
-        k, kPrime, effWidth, screeningWavevector, rng, dist);
+    T psi = sampleSingleLayerFroehlichDeflectionAngleFF(
+        k, kPrime, [this](T q) { return formFactor(q); }, screeningWavevector,
+        rng, dist);
 
     particle.k[0] = kPrime * std::cos(phi + psi);
     particle.k[1] = kPrime * std::sin(phi + psi);
@@ -312,12 +390,12 @@ private:
 
     T qPlus = k * (cosTheta + root); // momentum transfer, "+" branch
     T partPlus = (cosTheta + root);
-    partPlus *= std::pow(std::erfc(effWidth * qPlus / 2.), 2) *
+    partPlus *= std::pow(formFactor(qPlus), 2) *
                 twoDScreeningFactor(qPlus, screeningWavevector);
 
     T qMinus = k * (cosTheta - root); // momentum transfer, "-" branch
     T partMinus = (cosTheta - root);
-    partMinus *= std::pow(std::erfc(effWidth * qMinus / 2.), 2) *
+    partMinus *= std::pow(formFactor(qMinus), 2) *
                  twoDScreeningFactor(qMinus, screeningWavevector);
     return (partPlus + partMinus) / root;
   }

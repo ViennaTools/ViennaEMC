@@ -11,6 +11,8 @@
 #include <emcSimulationResults.hpp>
 #include <emcUtil.hpp>
 
+#include <vector>
+
 /*! \brief class performing the multi-valley ensemble Monte Carlo simulation for
  * devices.
  *
@@ -59,6 +61,7 @@ class emcSimulation {
   T channelX0 = 0, channelX1 = 0, channelLength = 1;
   T driftCurrentSum = 0;
   SizeType driftCurrentCount = 0;
+  std::vector<T> driftCurrentTrace; // per-step tally values (only when tracking)
   SizeType poissonInterval = 1; // solve Poisson every n-th step (frozen field)
 
 public:
@@ -75,6 +78,12 @@ public:
   //! Time-averaged drift-velocity current [A] (over non-transient steps).
   T getAvgDriftCurrent() const {
     return driftCurrentCount ? driftCurrentSum / driftCurrentCount : 0;
+  }
+  //! Drift-velocity current [A] at every non-transient step, in step order
+  //! (empty unless setChannelCurrentRegion() was called). Lets a driver check
+  //! convergence and form block-averaged standard errors after the run.
+  const std::vector<T> &getDriftCurrentTrace() const {
+    return driftCurrentTrace;
   }
 
   //! Solve the (expensive) Poisson equation only every n-th step and reuse the
@@ -196,9 +205,12 @@ private:
   void accumulateDriftCurrent() {
     if (!trackChannelCurrent)
       return;
+    T stepCurrent = 0;
     for (SizeType idxType = 0; idxType < param.particleTypes.size(); idxType++)
-      driftCurrentSum += particleHandler.getChannelDriftCurrent(
+      stepCurrent += particleHandler.getChannelDriftCurrent(
           idxType, channelX0, channelX1, channelLength);
+    driftCurrentSum += stepCurrent;
+    driftCurrentTrace.push_back(stepCurrent);
     driftCurrentCount++;
   }
 

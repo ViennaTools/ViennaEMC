@@ -15,13 +15,22 @@ private:
   DeviceType &device;
   T scatterConst1;
   T scatterConst2;
+  // Ionized-impurity density [1/m^3]. Negative (default) means the doping
+  // density of the region, i.e. the standard Brooks-Herring assumption
+  // N_I = n of a fully ionized, uncompensated sample. A positive value
+  // decouples the scatterer count from the carrier density, as in a
+  // modulation-doped channel where the donors sit outside the transport
+  // layer; the free carriers (= doping) continue to set the screening.
+  T impurityDensity;
   mutable std::uniform_real_distribution<T> dist;
 
 public:
   emcCoulombScatterMechanism() = delete;
 
-  emcCoulombScatterMechanism(SizeType inIdxValley, T epsR, DeviceType &inDevice)
-      : emcScatterMechanism<T>(inIdxValley), dist(0., 1.), device(inDevice) {
+  emcCoulombScatterMechanism(SizeType inIdxValley, T epsR, DeviceType &inDevice,
+                             T inImpurityDensity = T(-1))
+      : emcScatterMechanism<T>(inIdxValley), dist(0., 1.), device(inDevice),
+        impurityDensity(inImpurityDensity) {
     T epsMat = constants::eps0 * epsR;
     T temperature = device.getTemperature();
     T Vt = device.getThermalVoltage();
@@ -40,9 +49,14 @@ public:
     T mc = currValley->getEffMassCond();
     T alpha = currValley->getNonParabolicity();
     T gamma = currValley->getGamma(energy);
-    return scatterConst1 * pow(md, 3. / 2.) / regionDoping * std::sqrt(gamma) *
-           (2 * alpha * energy + 1.0) /
-           (1 + (scatterConst2 * mc * gamma / regionDoping));
+    T rate = scatterConst1 * pow(md, 3. / 2.) / regionDoping *
+             std::sqrt(gamma) * (2 * alpha * energy + 1.0) /
+             (1 + (scatterConst2 * mc * gamma / regionDoping));
+    // The rate is linear in the number of scattering centres; the screening
+    // (regionDoping = free carriers) is untouched by this rescaling.
+    if (impurityDensity > T(0))
+      rate *= impurityDensity / regionDoping;
+    return rate;
   }
 
   void scatterParticle(emcParticle<T> &particle, emcRNG &rng) const {
